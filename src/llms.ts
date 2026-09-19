@@ -136,8 +136,10 @@ size. The SDKs verify it and surface it as pin_evidence.
 
 PII/secret leakage in payment metadata, nonce replay, overpayment vs the quoted
 price, prompt-injection-triggered payments (fast + deep tiers: weighted
-multilingual tells with address-proximity scoring; base64/hex/percent/HTML-entity
-decoding; Unicode tag-character smuggling; homoglyph folding), incoming
+multilingual tells with address-proximity and cluster scoring, scanned raw and
+with HTML/markdown stripped; base64/hex/percent/HTML-entity/JS-escape decoding;
+Unicode tag-character smuggling; homoglyph, leetspeak and letter-spacing
+folding), incoming
 resource-URL risk, canonical-USDC verification (lookalike tokens),
 address-poisoning (including vanity-bait addresses planted in just-read
 content), known-bad lists, TOFU

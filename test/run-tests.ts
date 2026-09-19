@@ -2911,5 +2911,46 @@ console.log("\n— public stats + self-measured uptime (/, /v1/stats) —");
     bare.includes('<div class="n">0</div>') && bare.includes("n/a") && bare.includes("seg-empty") && !bare.includes("{{"));
 }
 
+console.log("\n— injection: latency at the content cap (pathological inputs) —");
+{
+  // The scan runs synchronously in the request handler, so a quadratic
+  // regex is a denial of service for every tenant. The line-join regex in
+  // the deep tier used to take 42 s on an unbroken 200KB base64/hex run;
+  // every input here must stay linear. Budget is generous for slow CI
+  // hosts — a quadratic regression lands in the tens of seconds.
+  const BUDGET_MS = 250;
+  const cap = 200_000;
+  const inputs: Array<[string, string]> = [
+    ["unbroken base64-alphabet run", "A".repeat(cap)],
+    ["unbroken hex run", "ab".repeat(cap / 2)],
+    ["two 100KB alphabet lines", "A".repeat(cap / 2) + "\n" + "A".repeat(cap / 2 - 1)],
+    ["alphabet chunks with single spaces", ("A".repeat(13) + " ").repeat(cap / 14)],
+    ["'send' every 7 chars, no address", "send x ".repeat(cap / 7)],
+    ["'to' runs after a verb", ("Send " + "to ".repeat(25)).repeat(cap / 80)],
+    ["percent-encoded run", "%41".repeat(cap / 3)],
+    ["role-labelled lines", "Assistant: hi\n".repeat(cap / 14)],
+    ["unclosed html tags", "<a ".repeat(cap / 3)],
+    ["markdown emphasis run", "**".repeat(cap / 2)],
+    ["cyrillic prose", "Спасибо ".repeat(cap / 8)],
+    ["letter-spaced run", "a ".repeat(cap / 2)],
+    ["leet tokens", "1gn0re ".repeat(cap / 7)],
+    ["spaces without newlines", "\n" + " ".repeat(cap - 1)],
+  ];
+  let worst = 0;
+  let worstName = "";
+  for (const [name, content] of inputs) {
+    const t = performance.now();
+    scan("outgoing", {
+      payment: { ...basePayment, amount_usd: 1 },
+      expected_price_usd: 1,
+      context: { origin: "fetched_content", content },
+    });
+    const ms = performance.now() - t;
+    if (ms > worst) { worst = ms; worstName = name; }
+    check(`content-cap input stays linear: ${name} (${ms.toFixed(1)} ms)`, ms < BUDGET_MS, ms);
+  }
+  console.log(`  worst case ${worst.toFixed(1)} ms (${worstName})`);
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

@@ -289,7 +289,7 @@ const DETECTORS: Detector[] = [
   {
     name: "Prompt-injection-triggered payments",
     checks: "injection.payto_from_content",
-    desc: "The strongest check. If the payee address arrived in content your agent just read — a web page, a tool result — that payment is blocked. Detection survives base64/hex encoding, invisible Unicode, homoglyphs, and multilingual override phrasing.",
+    desc: "The strongest check. If the payee address arrived in content your agent just read — a web page, a tool result — that payment is blocked. Detection survives HTML/markdown markup, base64/hex encoding, invisible Unicode, homoglyphs, leetspeak, and multilingual override phrasing.",
   },
   {
     name: "Replay",

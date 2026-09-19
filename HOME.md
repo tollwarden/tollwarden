@@ -10,7 +10,7 @@ TollWarden is **advisory** and **non-custodial**: it never touches your keys, yo
 
 ## What a scan catches
 
-- **Prompt-injection-triggered payments** — the strongest check. If the payee address arrived in content your agent just read (a web page, a tool result), that payment is blocked. Detection survives base64/hex encoding, invisible Unicode, homoglyphs, and multilingual override phrasing.
+- **Prompt-injection-triggered payments** — the strongest check. If the payee address arrived in content your agent just read (a web page, a tool result), that payment is blocked. Detection survives HTML/markdown markup, base64/hex encoding, invisible Unicode, homoglyphs, leetspeak, and multilingual override phrasing.
 - **Replay** — a payment authorization your agent already used, presented again.
 - **Overpayment** — amounts far beyond the quoted price, or beyond an absolute ceiling you set.
 - **Secret and PII leakage** — private keys, seed phrases, API keys, card numbers, SSNs in payment metadata, caught *before* they're transmitted.
