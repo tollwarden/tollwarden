@@ -3,7 +3,7 @@
   "name": "com.tollwarden/tollwarden",
   "title": "TollWarden",
   "description": "Screens x402 payments before settlement for injected payee addresses and sellers who never deliver.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "websiteUrl": "https://tollwarden.com",
   "repository": {
     "url": "https://github.com/tollwarden/tollwarden",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "tollwarden",
-      "version": "1.5.0",
+      "version": "1.6.0",
       "transport": {
         "type": "stdio"
       }

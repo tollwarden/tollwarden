@@ -1,6 +1,6 @@
 {
   "name": "tollwarden",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "mcpName": "com.tollwarden/tollwarden",
   "description": "TollWarden — a payment security firewall for x402 micropayment traffic. Advisory scanning: PII/secret leaks, replay, overpayment, prompt-injection-triggered payments, counterparty reputation. Non-custodial. Includes an MCP server: npx tollwarden",
   "type": "module",
