@@ -34,7 +34,7 @@ guarded = wrap_transport_with_tollwarden(my_x402_transport, tollwarden)
 # use `guarded` anywhere a transport goes
 ```
 
-Non-402 responses pass through untouched (zero overhead). On a 402, the payment is guarded as an outgoing payment (overpayment, address poisoning, velocity, injection provenance — anything you `observe()`d feeds the detector), the offer is scanned as an incoming request (URL risk, credential demands, asset verification, reputation), and only passing verdicts reach the paying transport. A block raises `TollWardenBlockedError` **before any payment is signed**; unparseable 402 offers fail closed. Options: `strict`, `scan_offer`, `expected_price_usd`, `on_scan` telemetry, `base_transport`.
+Non-402 responses pass through untouched (zero overhead). On a 402, the payment is guarded as an outgoing payment (overpayment, address poisoning, velocity, injection provenance — anything you `observe()`d feeds the detector), the offer is scanned as an incoming request (URL risk, credential demands, asset verification, reputation), and only passing verdicts reach the paying transport. A block raises `TollWardenBlockedError` **before any payment is signed**; unparseable 402 offers fail closed. Options: `strict`, `scan_offer`, `expected_price_usd`, `on_scan` telemetry, `base_transport`, and `enforcer` — pass a `TollWardenEnforcer` and every passing verdict is registered as signing authority, so a `guard_signer()`-wrapped account inside the paying transport signs only what was scanned (see enforcement below).
 
 ## The important part: provenance tagging
 
@@ -86,6 +86,15 @@ enforcer.approve(scan, payment)         # registers the allow-verdict locally
 
 How the binding works: the wrapped signer intercepts EIP-712 payment authorizations (EIP-3009 `TransferWithAuthorization`/`ReceiveWithAuthorization` — the x402 "exact" scheme — plus ERC-2612 `Permit`; eth-account's positional, keyword, and `full_message=` call shapes are all recognized), reconstructs the payment from the typed data itself, and recomputes the commitment `sha256(network|pay_to|asset|amount|nonce)`. Only a live approval for **exactly that commitment** lets the signature happen — so "scan payment A, sign payment B" fails structurally, not by convention.
 
+**Pre-sign approvals.** In the default path you scan the 402 *offer*, and an offer has no nonce — the x402 client mints the EIP-3009 nonce when it signs. An approval registered from a nonce-less payment binds `(network, pay_to, asset, amount)` and admits exactly **one** authorization carrying those facts, whatever nonce it ends up with (single-use is what stops a second). An approval registered *with* a nonce still requires that exact nonce. The two compose in one line:
+
+```python
+enforcer = TollWardenEnforcer(trusted_key_hex=tollwarden.verdict_key())
+account  = enforcer.guard_signer(Account.from_key(PRIVATE_KEY))
+guarded  = wrap_transport_with_tollwarden(paying_transport_for(account), tollwarden, enforcer=enforcer)
+# every 402: scanned → verdict registered → the guarded account signs that authorization and nothing else
+```
+
 Guarantees and options: approvals are verified against the **pinned** verdict key at `approve()` time (tampered/replayed/expired attestations raise), are **single-use** by default (`reusable=True` to opt out), expire with the attestation (tighten with `max_age_s`), gate on allow-only verdicts (`allow_flagged=True` to accept flags; `accept_overrides=True` to accept human-approved `override:allow` verdicts from step-up approvals — opt-in because a self-webhooked agent could approve its own flags), and can be `revoke()`d. Unrecognized typed data passes through by default; `strict_types=True` makes the signer deny-by-default. Enforcement is fully local and fail-closed — if TollWarden is unreachable, nothing new can be approved. For flags that pause for a human (`scan["approval"]` present), `client.wait_for_approval(scan, payment=payment)` polls until the operator decides and returns the signed override.
 
 **Local policy: allowlist + spend caps.** The verdict gate answers "was this exact payment scanned and allowed?" — local policy answers a different question: "is this payment inside the bounds I set, no matter what any scan said?" Configure it on the enforcer and it is checked against the typed data at signature time, entirely offline and independent of approvals:
@@ -133,7 +142,7 @@ tollwarden.reputation("0xsomeone...")                           # report summary
 
 `TollWardenClient` — `scan_outgoing`, `scan_incoming`, `guard_outgoing`, `guard_incoming`, `observe`, `note_planning`, `note_user_instruction`, `get_plans`, `subscribe`, `report`, `reputation`, `ensure_api_key`, `verdict_key`, plus `free_calls_remaining` / `plan` state.
 Payment path — `wrap_transport_with_tollwarden`, `payment_from_offer`.
-Enforcement — `TollWardenEnforcer` (`approve`, `guard_signer`, `assert_approved`, `revoke`, `clear`), `payment_from_typed_data`.
+Enforcement — `TollWardenEnforcer` (`approve`, `guard_signer`, `assert_approved`, `assert_approved_for`, `revoke`, `clear`), `payment_from_typed_data`.
 Standalone — `verify_attestation`, `compute_payment_commitment`.
 Errors — `TollWardenError` (`.status`, `.body`), `TollWardenBlockedError` (`.scan`), `AttestationError`, `TollWardenEnforcementError` (`.commitment`, `.primary_type`).
 

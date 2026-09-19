@@ -5,7 +5,12 @@
  * calling agent's narration is compromised: rate of payments, cumulative
  * spend, and first-contact size caps are observable facts, not self-reports.
  *
- * Scope key: agent_id, falling back to the payer address. All O(1)/O(window).
+ * Scope key: the server-resolved account (API-key hash) when the caller
+ * presented a key; only anonymous scans fall back to the client-declared
+ * agent_id / payer. A key-holder therefore cannot escape its own caps by
+ * rotating `agent_id` per request (audit 2026-09-19) — and since plan
+ * headroom is granted per key, the cap and the headroom now share a scope.
+ * All O(1)/O(window).
  */
 import type { CheckResult, ScanRequest } from "../types.ts";
 import type { TollWardenConfig } from "../config.ts";
@@ -14,13 +19,22 @@ import type { Store } from "../store.ts";
 const HOUR = 3600_000;
 const MINUTE = 60_000;
 
+export interface VelocityScope {
+  /** Storage key the windows are kept under. */
+  key?: string;
+  /** Human-readable label for reason strings (never a raw key hash). */
+  label?: string;
+}
+
 export function checkVelocity(
   req: ScanRequest,
   usd: number | null,
   store: Store,
   cfg: TollWardenConfig,
+  scope?: VelocityScope,
 ): CheckResult[] {
-  const key = req.agent_id ?? req.payment.payer?.toLowerCase();
+  const key = scope ? scope.key : req.agent_id ?? req.payment.payer?.toLowerCase();
+  const label = scope?.label ?? (key ? `agent "${key}"` : "");
   if (!key) {
     return [
       {
@@ -29,7 +43,7 @@ export function checkVelocity(
         verdict: "flag",
         severity: "low",
         reason:
-          "No agent_id or payer supplied, so rate and spend caps cannot be applied. Include one to enable velocity protection.",
+          "No API key, agent_id, or payer supplied, so rate and spend caps cannot be applied. Include one to enable velocity protection.",
       },
     ];
   }
@@ -51,7 +65,7 @@ export function checkVelocity(
       name: "Velocity & policy limits",
       verdict: "block",
       severity: "critical",
-      reason: `${perMinute} payment scans in the last minute for agent "${key}" — ≥2× the configured rate of ${cfg.maxPaymentsPerMinute}/min. This pattern is consistent with a wallet-drain loop.`,
+      reason: `${perMinute} payment scans in the last minute for ${label} — ≥2× the configured rate of ${cfg.maxPaymentsPerMinute}/min. This pattern is consistent with a wallet-drain loop.`,
       details: { per_minute: perMinute, limit: cfg.maxPaymentsPerMinute },
     });
   } else if (perMinute >= cfg.maxPaymentsPerMinute) {
@@ -60,7 +74,7 @@ export function checkVelocity(
       name: "Velocity & policy limits",
       verdict: "flag",
       severity: "medium",
-      reason: `${perMinute} payment scans in the last minute for agent "${key}" (configured rate: ${cfg.maxPaymentsPerMinute}/min).`,
+      reason: `${perMinute} payment scans in the last minute for ${label} (configured rate: ${cfg.maxPaymentsPerMinute}/min).`,
       details: { per_minute: perMinute, limit: cfg.maxPaymentsPerMinute },
     });
   }
@@ -71,7 +85,7 @@ export function checkVelocity(
       name: "Velocity & policy limits",
       verdict: "block",
       severity: "high",
-      reason: `Cumulative scanned spend of $${hourUsd.toFixed(4)} in the last hour for agent "${key}" exceeds the $${cfg.maxUsdPerHour} cap (MAX_USD_PER_HOUR).`,
+      reason: `Cumulative scanned spend of $${hourUsd.toFixed(4)} in the last hour for ${label} exceeds the $${cfg.maxUsdPerHour} cap (MAX_USD_PER_HOUR).`,
       details: { hour_usd: hourUsd, cap_usd: cfg.maxUsdPerHour },
     });
   }
@@ -87,7 +101,7 @@ export function checkVelocity(
           name: "Velocity & policy limits",
           verdict: "flag",
           severity: "medium",
-          reason: `First payment from agent "${key}" to counterparty ${payTo} is $${usd.toFixed(4)} — above the $${cfg.firstPaymentMaxUsd} first-contact cap (FIRST_PAYMENT_MAX_USD). Consider a small test payment first.`,
+          reason: `First payment from ${label} to counterparty ${payTo} is $${usd.toFixed(4)} — above the $${cfg.firstPaymentMaxUsd} first-contact cap (FIRST_PAYMENT_MAX_USD). Consider a small test payment first.`,
           details: { amount_usd: usd, cap_usd: cfg.firstPaymentMaxUsd },
         });
       }
@@ -104,7 +118,7 @@ export function checkVelocity(
       name: "Velocity & policy limits",
       verdict: "allow",
       severity: "info",
-      reason: `Rate (${perMinute}/min) and hourly spend ($${hourUsd.toFixed(4)}) are within limits for agent "${key}".`,
+      reason: `Rate (${perMinute}/min) and hourly spend ($${hourUsd.toFixed(4)}) are within limits for ${label}.`,
     });
   }
   return results;

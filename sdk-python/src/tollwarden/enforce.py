@@ -35,6 +35,15 @@ Design notes (identical guarantees to the TS kit):
     refuses everything unrecognized (deny-by-default).
   - Approvals are SINGLE-USE by default and expire with the attestation (plus
     an optional tighter ``max_age_s``), so a verdict can't be hoarded.
+  - PRE-SIGN approvals: the default payment path scans the 402 OFFER, and an
+    offer has no nonce — the x402 client mints the EIP-3009 nonce at signing
+    time. An approval registered from a nonce-less payment binds (network,
+    pay_to, asset, amount) and admits exactly ONE authorization carrying
+    those facts, whatever nonce it ends up with; single-use is what stops it
+    admitting a second. An approval registered WITH a nonce still requires
+    that exact nonce. Combine ``reusable=True`` with pre-sign approvals only
+    if you accept that any number of authorizations for the same facts may
+    sign until expiry.
   - Enforcement never phones home: approval happens locally against the
     pinned key. If TollWarden is unreachable, nothing new can be approved —
     fail-closed, which is the point.
@@ -49,7 +58,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from . import (
     TollWardenError,
@@ -240,7 +249,7 @@ class _GuardedSigner:
         # then the verdict/approval gate; count against the cumulative cap only
         # when both have passed and the signature is about to happen.
         enforcer.assert_policy(payment, primary)
-        enforcer.assert_approved(compute_payment_commitment(payment), primary)
+        enforcer.assert_approved_for(payment, primary)
         enforcer._record_authorized(payment)
         return signer.sign_typed_data(*args, **kwargs)
 
@@ -361,8 +370,34 @@ class TollWardenEnforcer:
         ``assert_approved``, which always runs after this gate."""
         if not self.override_admits_recipient:
             return False
-        approval = self._approvals.get(compute_payment_commitment(payment))
-        return approval is not None and approval.verdict == "override:allow"
+        found = self._find_approval(payment)
+        return found is not None and found[1].verdict == "override:allow"
+
+    def _find_approval(self, payment: Dict[str, Any]) -> Optional[Tuple[str, _Approval]]:
+        """Locate the approval for a payment: first by its exact commitment,
+        then — when the payment carries a nonce — by the commitment of the
+        same facts WITHOUT the nonce (a pre-sign approval, registered from the
+        402 offer before any nonce existed). Never widens beyond that: an
+        approval with a nonce only ever matches that nonce."""
+        exact = compute_payment_commitment(payment)
+        approval = self._approvals.get(exact)
+        if approval is not None:
+            return exact, approval
+        if payment.get("nonce"):
+            pre_sign = compute_payment_commitment({**payment, "nonce": None})
+            approval = self._approvals.get(pre_sign)
+            if approval is not None:
+                return pre_sign, approval
+        return None
+
+    def assert_approved_for(self, payment: Dict[str, Any], primary_type: Optional[str] = None) -> str:
+        """The sign-time gate keyed by PAYMENT rather than by commitment:
+        resolves the approval (exact, else pre-sign) and runs
+        ``assert_approved`` on it. Returns the commitment that was consumed."""
+        found = self._find_approval(payment)
+        commitment = found[0] if found is not None else compute_payment_commitment(payment)
+        self.assert_approved(commitment, primary_type)
+        return commitment
 
     def _record_authorized(self, payment: Dict[str, Any]) -> None:
         """Count an authorization against the cumulative cap — called by the

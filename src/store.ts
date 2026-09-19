@@ -263,6 +263,17 @@ export interface PinRecord {
   cdp_status: "unchecked" | "verified" | "mismatch";
 }
 
+/**
+ * Key for a tenant-scoped record: `${tenant}|${suffix}`. Tenants are server-
+ * resolved API-key hashes, never anything the request body can choose, so a
+ * caller can only ever write history under its own identity (audit 2026-09-19:
+ * the previous single global pin map let any $0.01 caller pin a domain for
+ * everyone — H-2 violated by construction).
+ */
+export function tenantKey(tenant: string, suffix: string): string {
+  return `${tenant}|${suffix}`;
+}
+
 /** Cached ScoutScore trust rating for a merchant domain (external signal). */
 export interface ScoutScoreRecord {
   /** null while unavailable (endpoint down / paid-only / parse failure) */
@@ -296,6 +307,7 @@ interface Snapshot {
   velocity: Record<string, VelocityEvent[]>;
   counterparties: Record<string, string[]>;
   pins: Record<string, PinRecord>;
+  tenant_pins?: Record<string, PinRecord>;
   scout_scores?: Record<string, ScoutScoreRecord>;
   uptime_ranges?: UptimeRange[];
 }
@@ -327,7 +339,20 @@ export class Store {
   cumulativeSpend: Map<string, CumulativeSpend> = new Map();
   velocity: Map<string, VelocityEvent[]> = new Map();
   counterparties: Map<string, string[]> = new Map();
+  /**
+   * GLOBAL pin observations, keyed by resource domain: the first pay_to ANY
+   * caller presented for the domain, plus the async CDP Bazaar cross-check
+   * result. Written from client input, so on its own it is advisory (a
+   * mismatch flags). It becomes block-grade only when `cdp_status` is
+   * "verified" — a server-observed corroboration no caller can supply.
+   */
   pins: Map<string, PinRecord> = new Map();
+  /**
+   * TENANT pins, keyed tenantKey(keyHash, domain): each account's own
+   * domain→pay_to history. A mismatch here blocks — it is the caller's own
+   * prior observation, which no other caller can have written.
+   */
+  tenantPins: Map<string, PinRecord> = new Map();
   scoutScores: Map<string, ScoutScoreRecord> = new Map();
   /** Self-measured liveness ledger (see beatUptime). Server-internal — never
    * touched by client input, so it needs no per-client eviction. */
@@ -374,6 +399,7 @@ export class Store {
       this.velocity = new Map(Object.entries(snap.velocity ?? {}));
       this.counterparties = new Map(Object.entries(snap.counterparties ?? {}));
       this.pins = new Map(Object.entries(snap.pins ?? {}));
+      this.tenantPins = new Map(Object.entries(snap.tenant_pins ?? {}));
       this.scoutScores = new Map(Object.entries(snap.scout_scores ?? {}));
       this.uptimeRanges = Array.isArray(snap.uptime_ranges) ? snap.uptime_ranges : [];
       this.reindexReports();
@@ -407,6 +433,66 @@ export class Store {
 
   markDirty(): void {
     this.dirty = true;
+  }
+
+  /**
+   * Operator action: forget every pin held for a resource domain — the global
+   * observation AND every tenant's own record — so a legitimately rotated
+   * merchant wallet can be re-pinned on next sighting. Returns the number of
+   * records removed.
+   */
+  clearPin(domain: string): number {
+    const d = domain.toLowerCase();
+    let n = this.pins.delete(d) ? 1 : 0;
+    for (const k of [...this.tenantPins.keys()]) {
+      if (k.endsWith(`|${d}`)) {
+        this.tenantPins.delete(k);
+        n += 1;
+      }
+    }
+    if (n > 0) this.markDirty();
+    return n;
+  }
+
+  /**
+   * Move every tenant-keyed record from one key hash to another. Called on key
+   * rotation so the ACCOUNT keeps its history: pins, velocity window, hourly
+   * spend, counterparty list, and cumulative scanned spend all follow the
+   * account. Without this, rotating a key would reset the very caps it is
+   * subject to — a free evasion.
+   */
+  rekeyTenant(oldHash: string, newHash: string): void {
+    if (oldHash === newHash) return;
+    const rekeyPrefixed = <V>(map: Map<string, V>): void => {
+      for (const k of [...map.keys()]) {
+        if (k.startsWith(`${oldHash}|`)) {
+          const v = map.get(k) as V;
+          map.delete(k);
+          map.set(`${newHash}|${k.slice(oldHash.length + 1)}`, v);
+        }
+      }
+    };
+    const rekeyExact = <V>(map: Map<string, V>): void => {
+      const v = map.get(oldHash);
+      if (v === undefined) return;
+      map.delete(oldHash);
+      map.set(newHash, v);
+    };
+    rekeyPrefixed(this.tenantPins);
+    rekeyPrefixed(this.cumulativeSpend);
+    rekeyExact(this.velocity);
+    rekeyExact(this.counterparties);
+    this.markDirty();
+  }
+
+  /** Drop every tenant-keyed record for a revoked account. */
+  dropTenant(hash: string): void {
+    for (const map of [this.tenantPins, this.cumulativeSpend]) {
+      for (const k of [...map.keys()]) if (k.startsWith(`${hash}|`)) map.delete(k);
+    }
+    this.velocity.delete(hash);
+    this.counterparties.delete(hash);
+    this.markDirty();
   }
 
   /**
@@ -525,6 +611,7 @@ export class Store {
     Store.evict(this.velocity, max);
     Store.evict(this.counterparties, max);
     Store.evict(this.pins, max);
+    Store.evict(this.tenantPins, max);
     Store.evict(this.scoutScores, max);
     Store.evict(this.keys, max);
     Store.evict(this.revoked, max);
@@ -565,6 +652,7 @@ export class Store {
       velocity: Object.fromEntries(this.velocity),
       counterparties: Object.fromEntries(this.counterparties),
       pins: Object.fromEntries(this.pins),
+      tenant_pins: Object.fromEntries(this.tenantPins),
       scout_scores: Object.fromEntries(this.scoutScores),
       uptime_ranges: this.uptimeRanges,
     };

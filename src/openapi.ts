@@ -38,10 +38,10 @@ const PaymentDetails = {
     network: { type: "string", description: 'CAIP-2 network id, e.g. "eip155:8453"' },
     asset: { type: "string", description: "Token contract address (e.g. USDC)" },
     amount: { type: "string", description: 'Amount in atomic token units, e.g. "10000" = $0.01 USDC' },
-    amount_usd: { type: "number", description: "Alternative: decimal USD value" },
-    asset_decimals: { type: "integer", description: "Token decimals if amount is atomic units (default 6 = USDC)" },
+    amount_usd: { type: "number", description: "Alternative when no atomic amount is available: decimal USD value (self-reported; ignored and flagged when it disagrees with `amount`)" },
+    asset_decimals: { type: "integer", description: "Informational. Decimals are resolved server-side from `asset` (canonical USDC = 6); a declared value that disagrees is ignored and flagged. Honored only for assets the server does not know." },
     pay_to: { type: "string", description: "Recipient address" },
-    payer: { type: "string", description: "Paying agent's address (optional; scopes replay + velocity tracking)" },
+    payer: { type: "string", description: "Paying agent's address (optional; scopes replay tracking, and velocity/history for anonymous scans)" },
     resource_url: { type: "string", description: "The resource being purchased" },
     description: { type: "string" },
     reason: { type: "string", description: "Free-text reason the agent recorded for making this payment" },
@@ -55,7 +55,7 @@ const ScanRequest = {
   type: "object",
   required: ["payment"],
   properties: {
-    agent_id: { type: "string", description: "Stable identifier for the calling agent (scopes velocity limits)" },
+    agent_id: { type: "string", description: "Stable identifier for the calling agent. Labels the scan; velocity, pins, and counterparty history are scoped to your API key's account, and to agent_id only for anonymous scans." },
     payment: PaymentDetails,
     expected_price_usd: {
       type: "number",

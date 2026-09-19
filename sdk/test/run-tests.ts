@@ -26,6 +26,7 @@ import {
   type PaymentDetails,
   type ScanResponse,
   type TypedDataLike,
+  type TypedDataSigner,
 } from "../src/index.ts";
 
 let passed = 0;
@@ -776,6 +777,50 @@ console.log("\n— local policy (recipient allowlist + spend caps) —");
   check("override admission never bypasses spend caps", capped instanceof TollWardenEnforcementError && String((capped as Error).message).includes("per-payment cap"));
 }
 
+console.log("\n— pre-sign approvals: the offer has no nonce, the authorization does —");
+{
+  // The default path scans the 402 OFFER; the x402 client mints the EIP-3009
+  // nonce only when it signs. The enforcer must match the two (audit
+  // 2026-09-19: they did not, so the shipped wrapper could never satisfy
+  // guardSigner).
+  const offer: PaymentDetails = { ...basePayment, nonce: undefined };
+  const enforcer = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+  const wallet = fakeSigner();
+  const guarded = enforcer.guardSigner(wallet);
+  enforcer.approve(makeScan(offer), offer);
+  const sig = await guarded.signTypedData(typedDataFor({ ...offer, nonce: "0xpre1" }));
+  check("a nonce-less (pre-sign) approval admits the authorization once the nonce exists", sig === "0xsigned" && wallet.signed.length === 1);
+  let threw: unknown = null;
+  try { await guarded.signTypedData(typedDataFor({ ...offer, nonce: "0xpre2" })); } catch (e) { threw = e; }
+  check("…and exactly once: a second nonce on the same facts is refused (single-use)", threw instanceof TollWardenEnforcementError && String((threw as Error).message).includes("already used") && wallet.signed.length === 1);
+
+  // The pre-sign approval binds the FACTS: any other amount/recipient/asset is refused.
+  const e2 = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+  e2.approve(makeScan(offer), offer);
+  const w2 = fakeSigner();
+  threw = null;
+  try { await e2.guardSigner(w2).signTypedData(typedDataFor({ ...offer, amount: "20000", nonce: "0xpre3" })); } catch (e) { threw = e; }
+  check("a pre-sign approval does not admit a different amount", threw instanceof TollWardenEnforcementError && w2.signed.length === 0);
+  threw = null;
+  try { await e2.guardSigner(w2).signTypedData(typedDataFor({ ...offer, pay_to: "0xSomeoneElse0000000000000000000000000001", nonce: "0xpre4" })); } catch (e) { threw = e; }
+  check("a pre-sign approval does not admit a different recipient", threw instanceof TollWardenEnforcementError && w2.signed.length === 0);
+
+  // An approval registered WITH a nonce still binds that exact nonce.
+  const e3 = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+  const withNonce = { ...offer, nonce: "0xpre5" };
+  e3.approve(makeScan(withNonce), withNonce);
+  const w3 = fakeSigner();
+  threw = null;
+  try { await e3.guardSigner(w3).signTypedData(typedDataFor({ ...offer, nonce: "0xpre6" })); } catch (e) { threw = e; }
+  check("a post-sign approval still requires its exact nonce", threw instanceof TollWardenEnforcementError && w3.signed.length === 0);
+  check("…and signs when the nonce matches", (await e3.guardSigner(w3).signTypedData(typedDataFor(withNonce))) === "0xsigned");
+
+  // assertApprovedFor reports which commitment it consumed.
+  const e4 = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+  const c = e4.approve(makeScan(offer), offer);
+  check("assertApprovedFor resolves a nonce-bearing payment to its pre-sign commitment", e4.assertApprovedFor({ ...offer, nonce: "0xpre7" }) === c);
+}
+
 console.log("\n— wrapFetchWithTollWarden (default payment path) —");
 
 // A mock x402 merchant: 402 with an offer unless X-PAYMENT is present.
@@ -822,6 +867,64 @@ const payingFetch: typeof fetch = async (input, init) => {
   payments++;
   return fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string>), "x-payment": "mock-settled" } });
 };
+
+/** A paying fetch that does what a real x402 client does: read the 402,
+ * mint a fresh nonce, ask the (possibly guarded) signer for the EIP-3009
+ * signature, then retry with the payment header. */
+function signingPayingFetch(signer: TypedDataSigner): typeof fetch {
+  return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const probe = await fetch(input, init);
+    if (probe.status !== 402) return probe;
+    const body = (await probe.json()) as { accepts: Array<Record<string, string>> };
+    const e = body.accepts[0]!;
+    await signer.signTypedData(typedDataFor({ network: e.network, asset: e.asset, pay_to: e.payTo, amount: e.maxAmountRequired, nonce: `0xmint${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}` }));
+    payments++;
+    return fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string>), "x-payment": "mock-settled" } });
+  }) as typeof fetch;
+}
+
+{
+  // Composition: wrapper + enforcer + guarded signer. The wrapper registers
+  // the offer's verdict; the client signs a nonce-bearing authorization; the
+  // enforcer matches them. This is the enforced default path.
+  const tollwarden = new TollWardenClient({ baseUrl: BASE, agentId: "wrap-enforced" });
+  const enforcer = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+  const wallet = fakeSigner();
+  const guardedFetch = wrapFetchWithTollWarden(signingPayingFetch(enforcer.guardSigner(wallet)), tollwarden, { enforcer });
+  payments = 0;
+  const res = await guardedFetch(`${MERCHANT}/paid`);
+  check("wrapper + enforcer: the guarded signer signs the scanned offer's authorization", res.status === 200 && payments === 1 && wallet.signed.length === 1, { status: res.status, payments, signed: wallet.signed.length });
+  const signedNonce = (wallet.signed[0]?.message as { nonce?: string })?.nonce ?? "";
+  check("the signed authorization carried a nonce the offer never had", signedNonce.startsWith("0xmint"));
+
+  // Without the enforcer option the wrapper is advisory only: the guarded
+  // signer has no approval and refuses — nothing is paid.
+  const advisoryOnly = wrapFetchWithTollWarden(signingPayingFetch(enforcer.guardSigner(fakeSigner())), tollwarden);
+  payments = 0;
+  let threw: unknown = null;
+  try { await advisoryOnly(`${MERCHANT}/paid?payto=0xOtherMerchant0000000000000000000000000001`); } catch (e) { threw = e; }
+  check("without `enforcer`, a guarded signer refuses the unapproved authorization and nothing is paid", threw instanceof TollWardenEnforcementError && payments === 0);
+
+  // A block never reaches the enforcer: no approval is left behind.
+  const w2 = fakeSigner();
+  const blockedFetch = wrapFetchWithTollWarden(signingPayingFetch(enforcer.guardSigner(w2)), new TollWardenClient({ baseUrl: BASE }), { enforcer });
+  payments = 0;
+  threw = null;
+  try { await blockedFetch(`${MERCHANT}/paid?payto=0xBADdrain`); } catch (e) { threw = e; }
+  check("a blocked offer registers no approval and nothing is signed", threw instanceof TollWardenBlockedError && payments === 0 && w2.signed.length === 0);
+  let stale: unknown = null;
+  try { await enforcer.guardSigner(w2).signTypedData(typedDataFor({ ...basePayment, pay_to: "0xBADdrain", nonce: "0xafterblock" })); } catch (e) { stale = e; }
+  check("…and the enforcer still refuses that recipient afterwards", stale instanceof TollWardenEnforcementError && w2.signed.length === 0);
+
+  // A flag verdict with a strict enforcer: approve() refuses BEFORE any payment.
+  const strictEnforcer = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+  const w3 = fakeSigner();
+  const flaggedFetch = wrapFetchWithTollWarden(signingPayingFetch(strictEnforcer.guardSigner(w3)), new TollWardenClient({ baseUrl: BASE }), { enforcer: strictEnforcer });
+  payments = 0;
+  threw = null;
+  try { await flaggedFetch(`${MERCHANT}/paid?payto=0xIFFYshop`); } catch (e) { threw = e; }
+  check("a flagged offer with an allow-only enforcer throws before the paying fetch runs", threw instanceof TollWardenEnforcementError && payments === 0 && w3.signed.length === 0);
+}
 
 {
   // Allow path: probe → scan × 2 → pay → premium content.

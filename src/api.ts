@@ -104,12 +104,15 @@ export function handleScan(
   // Per-key plan overrides (velocity/spend headroom, deep-scan policy), clamped
   // to hard ceilings. Safety-critical checks are not plan-configurable.
   const eff = resolveEffectiveConfig(cfg, store, apiKey);
-  const scan = runScan(direction, req, eff, store);
+  // The scan's history scope is the ACCOUNT behind the presented key (resolved
+  // here, from the header — never from the body). Anonymous scans get none.
+  const tenant = store.resolveKey(apiKey).hash;
+  const scan = runScan(direction, req, eff, store, { tenant });
   // Pin evidence is read AFTER runScan: the scanner has already created this
   // scan's TOFU pin (age 0 on first sighting) and rolled back any pin a
   // blocked scan created — so the signed evidence reflects post-rollback truth.
   if (signer) {
-    const pin = pinEvidenceFor(req.payment, store, eff.pinning, scan.scanned_at);
+    const pin = pinEvidenceFor(req.payment, store, eff.pinning, scan.scanned_at, tenant);
     scan.attestation = signer.attest(scan, paymentCommitment(req.payment), undefined, pin);
   }
 
@@ -385,6 +388,9 @@ export function handleKeyRotate(store: Store, cfg: TollWardenConfig, apiKey: str
     ...(grace > 0 ? { grace_until: graceUntil, successor: newHash } : {}),
   });
   migrateApprovalsOnRotate(store, auth.hash, newHash);
+  // Pins, velocity windows, counterparty history, and cumulative spend belong
+  // to the ACCOUNT: they follow the rotation, so rotating cannot reset a cap.
+  store.rekeyTenant(auth.hash, newHash);
   store.markDirty();
 
   const isAdminKey = !!cfg.adminKeyHash && auth.hash === cfg.adminKeyHash;
@@ -437,6 +443,7 @@ export function handleKeyRevoke(store: Store, cfg: TollWardenConfig, apiKey: str
   for (const rec of store.approvals.values()) {
     if (rec.key_hash === auth.hash && rec.status === "pending") rec.status = "expired";
   }
+  store.dropTenant(auth.hash);
   store.markDirty();
   return {
     status: 200,
@@ -616,30 +623,30 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
       checks: [
         "pii: PII/secret detection on resource_url, description, reason, metadata",
         "replay: nonce reuse tracking",
-        "overpay: configurable multiple-of-expected-price + absolute ceiling + non-positive amounts",
+        "overpay: configurable multiple-of-expected-price + absolute ceiling + non-positive amounts — value resolved from the atomic amount and SERVER-known token decimals (a client-declared asset_decimals that disagrees is ignored and flagged)",
         "injection: prompt-injection-triggered payment provenance analysis (fast tier)",
         "injection-deep: base64 + unicode-obfuscation rescan (bypassed below MICRO_BYPASS_USD; policy.force_deep overrides)",
         "url: resource URL structural risk (incoming)",
         "asset: canonical-USDC verification (lookalike-token defense)",
         "badlist: known-bad address list",
-        "pin: TOFU merchant pinning (domain -> pay_to) + optional async CDP cross-check",
-        "poison: address-poisoning detection (pay_to matching a known counterparty/pinned merchant on first+last chars but differing in the middle)",
+        "pin: TOFU merchant pinning (domain -> pay_to), two tiers — your own account's pin blocks on rotation; a shared observation from other callers only flags unless the async CDP Bazaar cross-check verified it",
+        "poison: address-poisoning detection (pay_to matching a counterparty you have paid, your own pinned merchant, or a CDP-verified pin on first+last chars but differing in the middle → block; a lookalike of another caller's unverified pin → flag)",
         "scout: ScoutScore external trust signal for merchant domains (opt-in, async + cached, flag-only)",
-        "velocity: rate, hourly spend cap, first-contact size cap (outgoing)",
+        "velocity: rate, hourly spend cap, first-contact size cap (outgoing) — scoped to your API key's account, not to a request field",
         "reputation: shared counterparty report registry v2 — 90-day half-life time decay, reporter-credibility weighting (observed payment history counts more than fresh anonymous ids), signed wallet rebuttals surfaced alongside reports",
         "delivery: measured, commitment-bound delivery-outcome history per counterparty (flag-only — a clean payment to a seller who never ships still fails you)",
       ],
       attestation:
         "Verdicts are Ed25519-signed (see /.well-known/tollwarden-verdict-key). Wallet policies can require a fresh allow-verdict before signing.",
       scan_request_schema: {
-        agent_id: "string (optional, scopes velocity limits)",
+        agent_id: "string (optional; labels the scan — velocity, pins, and counterparty history are scoped to your API key's account, and to agent_id only for anonymous scans)",
         payment: {
           scheme: "exact",
           network: "eip155:8453",
           asset: "0x... (token contract; enables canonical-USDC verification)",
           amount: "atomic units, e.g. '10000'",
           amount_usd: "or decimal USD",
-          asset_decimals: 6,
+          asset_decimals: "6 (informational — the server resolves decimals from `asset`; a disagreeing value is ignored and flagged)",
           pay_to: "0x... recipient",
           payer: "0x... payer (optional)",
           resource_url: "https://...",

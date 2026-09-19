@@ -15,6 +15,23 @@ export const CANONICAL_USDC: Record<string, string> = {
   "eip155:42161": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", // Arbitrum One
 };
 
+/** Every canonical USDC deployment above uses 6 decimals. */
+const USDC_DECIMALS = 6;
+
+/**
+ * Server-known token decimals for (network, asset), or null when the asset is
+ * not one TollWarden can vouch for. Value checks resolve decimals from HERE,
+ * never from the request: `asset_decimals` is client-supplied, and declaring
+ * 18 for a 6-decimal token shrinks a $10 transfer to $0.00001 in every
+ * USD-denominated cap (audit 2026-09-19).
+ */
+export function knownAssetDecimals(network: string | undefined, asset: string | undefined): number | null {
+  if (!network || !asset) return null;
+  const canonical = CANONICAL_USDC[network];
+  if (!canonical) return null;
+  return asset.toLowerCase() === canonical.toLowerCase() ? USDC_DECIMALS : null;
+}
+
 export function checkAsset(payment: PaymentDetails, allowNonUsdc: boolean): CheckResult {
   const { asset, network } = payment;
 

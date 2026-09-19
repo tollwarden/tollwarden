@@ -202,7 +202,7 @@ server.tool(
 server.tool(
   "mint_api_key",
   "Issue a free TollWarden API key (first 100 calls free). Returns the key ONCE — store it and set it as TOLLWARDEN_API_KEY (or pass to other tools) for future sessions. Rate-limited per IP.",
-  { agent_id: z.string().optional().describe("Stable identifier for your agent — scopes velocity limits") },
+  { agent_id: z.string().optional().describe("Stable identifier for your agent — recorded on the key; velocity limits and merchant pins are scoped to the key's account") },
   async (args) => ({
     content: [{ type: "text", text: await call("POST", "/v1/keys", args) }],
   }),

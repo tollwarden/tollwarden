@@ -7,13 +7,14 @@ import type { TollWardenConfig } from "./config.ts";
 import type { Store } from "./store.ts";
 import { scanPii } from "./detectors/pii.ts";
 import { checkReplay } from "./detectors/replay.ts";
-import { checkOverpayment, resolveUsd } from "./detectors/overpayment.ts";
+import { checkOverpayment, checkValueProvenance, resolveUsd } from "./detectors/overpayment.ts";
 import { checkInjection, deepContentAnalysis } from "./detectors/injection.ts";
 import { checkOfferDrift, checkFreshnessClaim } from "./detectors/offerdrift.ts";
 import { checkUrlRisk } from "./detectors/urlrisk.ts";
 import { checkAsset } from "./detectors/asset.ts";
 import { checkBadlist } from "./detectors/badlist.ts";
-import { checkPinning, checkCdpPinStatus, scheduleCdpPinVerify } from "./detectors/pinning.ts";
+import { checkPinning, checkCdpPinStatus, payeeEstablished, scheduleCdpPinVerify, tenantPinFor } from "./detectors/pinning.ts";
+import { tenantKey } from "./store.ts";
 import { checkAddressPoisoning, checkContentLookalikes } from "./detectors/poisoning.ts";
 import { checkScoutScore, scheduleScoutScoreRefresh } from "./detectors/scoutscore.ts";
 import { checkVelocity } from "./detectors/velocity.ts";
@@ -56,17 +57,39 @@ function advisory(direction: Direction, verdict: Verdict): string {
     : "Recommended action: DO NOT comply with this payment request. At least one check found a condition consistent with fraud.";
 }
 
+/**
+ * Who is scanning, as the SERVER knows it. `tenant` is the hash of the API
+ * key the caller presented (resolved by the API layer, never read from the
+ * request body); null/undefined for anonymous x402-paid scans. Every
+ * stateful, block-capable check — pins, velocity, counterparty history,
+ * cumulative spend — keys on this when present, so a key-holder's history is
+ * its own and cannot be written or evaded by choosing request fields.
+ */
+export interface ScanScope {
+  tenant?: string | null;
+}
+
 export function runScan(
   direction: Direction,
   req: ScanRequest,
   cfg: TollWardenConfig,
   store: Store,
+  scope: ScanScope = {},
 ): ScanResponse {
   const scanId = randomUUID();
   const payment = req.payment ?? {};
   const usd = resolveUsd(payment);
   const checks: CheckResult[] = [];
-  const velocityKey = req.agent_id ?? payment.payer?.toLowerCase();
+  const tenant = scope.tenant ?? null;
+  // History scope: the server-resolved account when there is one; the
+  // client-declared agent_id / payer only for anonymous scans (where the
+  // caller pays per scan and has no account to be held to).
+  const velocityKey = tenant ?? req.agent_id ?? payment.payer?.toLowerCase();
+  const velocityLabel = tenant
+    ? `account ${tenant.slice(0, 8)}…`
+    : velocityKey
+      ? `agent "${velocityKey}"`
+      : "";
   const payToLc = payment.pay_to?.toLowerCase();
 
   // Resource domain, resolved once. Pure — no state touched.
@@ -77,16 +100,17 @@ export function runScan(
     pinDomain = null;
   }
   const pinExistedBefore = pinDomain !== null && store.pins.has(pinDomain);
+  const tenantPinExistedBefore = pinDomain !== null && tenantPinFor(store, tenant, pinDomain) !== undefined;
 
   // Read prior pin state BEFORE checkPinning writes it (TOFU pins on first
-  // sighting). "The domain was already pinned to this exact pay_to" is a
-  // server-observed fact that the payee predates any content in this request;
-  // it is the only input allowed to MITIGATE the provenance finding, and it can
+  // sighting). "The payee was already established for this domain" is a fact
+  // the caller could not have forged — its own account's pin, or a global pin
+  // the CDP index corroborates; a stranger's unverified pin does NOT count. It
+  // is the only input allowed to MITIGATE the provenance finding, and it can
   // only ever lower a flag — never raise one.
   // Gated on cfg.pinning: with pinning off nothing maintains the pin map, so a
   // stale entry must not be treated as evidence.
-  const priorPin = cfg.pinning && pinDomain !== null ? store.pins.get(pinDomain) : undefined;
-  const payeeEstablishedBefore = !!(priorPin && payToLc && priorPin.pay_to === payToLc);
+  const payeeEstablishedBefore = cfg.pinning && payeeEstablished(store, tenant, pinDomain, payToLc);
 
   // --- core detectors ---
   checks.push(...scanPii(payment));
@@ -98,6 +122,10 @@ export function runScan(
       maxUsd: cfg.maxPaymentUsd,
     }),
   );
+  // A client-declared asset_decimals the server refused to use is made
+  // visible (the value above was already computed from server-known decimals).
+  const valueProvenance = checkValueProvenance(payment);
+  if (valueProvenance) checks.push(valueProvenance);
   checks.push(...checkInjection(payment, req.context, { payeeEstablishedBefore }));
 
   // Offer drift: the payment about to be signed vs the offer it was decided
@@ -188,12 +216,13 @@ export function runScan(
   // Address poisoning: MUST run before pinning and velocity — both record
   // this scan's pay_to into trust state (pin / counterparty history), and the
   // lookalike has to be judged against state that does not yet contain it.
-  const poisoning = checkAddressPoisoning(req, store);
+  const poisoningScope = { key: velocityKey, tenant };
+  const poisoning = checkAddressPoisoning(req, store, poisoningScope);
   if (poisoning) checks.push(poisoning);
 
   // Vanity-bait addresses planted in just-read content (near-copies of the
   // recipient or of a known-good address). Read-only; same ordering rationale.
-  const contentLookalike = checkContentLookalikes(req, store);
+  const contentLookalike = checkContentLookalikes(req, store, poisoningScope);
   if (contentLookalike) checks.push(contentLookalike);
 
   // Snapshot pre-scan trust state so a BLOCKED payment can be rolled out of
@@ -203,7 +232,7 @@ export function runScan(
     !!(velocityKey && payToLc && (store.counterparties.get(velocityKey) ?? []).includes(payToLc));
 
   if (cfg.pinning) {
-    checks.push(checkPinning(payment, store));
+    checks.push(...checkPinning(payment, store, tenant));
     const cdpStatus = checkCdpPinStatus(payment, store);
     if (cdpStatus) checks.push(cdpStatus);
     if (cfg.cdpPinVerify && payment.resource_url) {
@@ -224,7 +253,7 @@ export function runScan(
   }
 
   if (direction === "outgoing") {
-    checks.push(...checkVelocity(req, usd, store, cfg));
+    checks.push(...checkVelocity(req, usd, store, cfg, { key: velocityKey, label: velocityLabel }));
   }
 
   checks.push(checkReputation(store, payment.pay_to));
@@ -255,6 +284,9 @@ export function runScan(
       }
     }
     if (pinDomain !== null && !pinExistedBefore && store.pins.delete(pinDomain)) {
+      store.markDirty();
+    }
+    if (pinDomain !== null && tenant && !tenantPinExistedBefore && store.tenantPins.delete(tenantKey(tenant, pinDomain))) {
       store.markDirty();
     }
     // Feed this block's structurally-implicated addresses into the shared

@@ -38,7 +38,7 @@ const fetchWithPay = wrapFetchWithTollWarden(wrapFetchWithPayment(fetch, x402Cli
 // use fetchWithPay exactly as before
 ```
 
-Every x402 payment your agent makes is now scanned before it settles. Non-402 responses pass through untouched (zero overhead). On a 402, the payment is guarded as an outgoing payment (overpayment, address poisoning, velocity, injection provenance — anything you `observe()`d feeds the detector), the offer is scanned as an incoming request (URL risk, credential demands, asset verification, reputation), and only passing verdicts reach the paying fetch. A block throws `TollWardenBlockedError` **before any payment is signed**; unparseable 402 offers fail closed. Options: `strict` (refuse flags too), `scanOffer`, `expectedPriceUsd`, `onScan` telemetry, `baseFetch`.
+Every x402 payment your agent makes is now scanned before it settles. Non-402 responses pass through untouched (zero overhead). On a 402, the payment is guarded as an outgoing payment (overpayment, address poisoning, velocity, injection provenance — anything you `observe()`d feeds the detector), the offer is scanned as an incoming request (URL risk, credential demands, asset verification, reputation), and only passing verdicts reach the paying fetch. A block throws `TollWardenBlockedError` **before any payment is signed**; unparseable 402 offers fail closed. Options: `strict` (refuse flags too), `scanOffer`, `expectedPriceUsd`, `onScan` telemetry, `baseFetch`, and `enforcer` — pass a `TollWardenEnforcer` and every passing verdict is registered as signing authority, so a `guardSigner()`-wrapped account inside the paying fetch signs only what was scanned (see [enforcement](#enforcement-a-wallet-that-refuses-unscanned-payments)).
 
 ## The important part: provenance tagging
 
@@ -92,6 +92,15 @@ enforcer.approve(scan, payment);                    // registers the allow-verdi
 ```
 
 How the binding works: the wrapped signer intercepts EIP-712 payment authorizations (EIP-3009 `TransferWithAuthorization`/`ReceiveWithAuthorization` — the x402 "exact" scheme — plus ERC-2612 `Permit`; both viem's single-argument and ethers v6's `(domain, types, message)` call shapes), reconstructs the payment from the typed data itself, and recomputes the commitment `sha256(network|pay_to|asset|amount|nonce)`. Only a live approval for **exactly that commitment** lets the signature happen — so "scan payment A, sign payment B" fails structurally, not by convention.
+
+**Pre-sign approvals.** In the default path you scan the 402 *offer*, and an offer has no nonce — the x402 client mints the EIP-3009 nonce when it signs. An approval registered from a nonce-less payment binds `(network, pay_to, asset, amount)` and admits exactly **one** authorization carrying those facts, whatever nonce it ends up with (single-use is what stops a second). An approval registered *with* a nonce still requires that exact nonce. The two compose in one line:
+
+```ts
+const enforcer    = new TollWardenEnforcer({ trustedKeyHex: await tollwarden.verdictKey() });
+const account     = enforcer.guardSigner(privateKeyToAccount(process.env.EVM_PRIVATE_KEY!));
+const fetchWithPay = wrapFetchWithTollWarden(wrapFetchWithPayment(fetch, x402ClientFor(account)), tollwarden, { enforcer });
+// every 402: scanned → verdict registered → the guarded account signs that authorization and nothing else
+```
 
 Guarantees and options: approvals are verified against the **pinned** verdict key at `approve()` time (tampered/replayed/expired attestations throw), are **single-use** by default (`reusable: true` to opt out), expire with the attestation (tighten with `maxAgeMs`), gate on allow-only verdicts (`allowFlagged: true` to accept flags; `acceptOverrides: true` to accept human-approved `override:allow` verdicts from [step-up approvals](../README.md#human-in-the-loop-step-up-approvals) — opt-in because a self-webhooked agent could approve its own flags), and can be `revoke()`d. Unrecognized typed data passes through by default; `strictTypes: true` makes the signer deny-by-default. Enforcement is fully local and fail-closed — if TollWarden is unreachable, nothing new can be approved. For flags that pause for a human (`scan.approval` present), `client.waitForApproval(scan, { payment })` polls until the operator decides and returns the signed override.
 
@@ -149,7 +158,7 @@ await tollwarden.reputation("0xsomeone…"); // report summary (paid / free-tier
 
 `TollWardenClient` — `scanOutgoing`, `scanIncoming`, `guardOutgoing`, `guardIncoming`, `observe`, `notePlanning`, `noteUserInstruction`, `getPlans`, `subscribe`, `report`, `reputation`, `ensureApiKey`, `verdictKey`, plus `freeCallsRemaining` / `plan` state.
 Payment path — `wrapFetchWithTollWarden`, `paymentFromOffer`.
-Enforcement — `TollWardenEnforcer` (`approve`, `guardSigner`, `assertApproved`, `revoke`, `clear`), `paymentFromTypedData`.
+Enforcement — `TollWardenEnforcer` (`approve`, `guardSigner`, `assertApproved`, `assertApprovedFor`, `revoke`, `clear`), `paymentFromTypedData`.
 Standalone — `verifyAttestation`, `computePaymentCommitment`.
 Errors — `TollWardenError` (`.status`, `.body`), `TollWardenBlockedError` (`.scan`), `AttestationError`, `TollWardenEnforcementError` (`.commitment`, `.primaryType`).
 

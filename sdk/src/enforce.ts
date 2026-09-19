@@ -31,6 +31,15 @@
  *    `strictTypes: true` to refuse everything unrecognized (deny-by-default).
  *  - Approvals are SINGLE-USE by default and expire with the attestation
  *    (plus an optional tighter `maxAgeMs`), so a verdict can't be hoarded.
+ *  - PRE-SIGN approvals: the default payment path scans the 402 OFFER, and
+ *    an offer has no nonce — the x402 client mints the EIP-3009 nonce at
+ *    signing time. An approval registered from a nonce-less payment binds
+ *    (network, pay_to, asset, amount) and admits exactly ONE authorization
+ *    carrying those facts, whatever nonce it ends up with; single-use is what
+ *    stops it admitting a second. An approval registered WITH a nonce still
+ *    requires that exact nonce. Combine `reusable: true` with pre-sign
+ *    approvals only if you accept that any number of authorizations for the
+ *    same facts may sign until expiry.
  *  - Enforcement never phones home: approval happens locally against the
  *    pinned key. If TollWarden is unreachable, nothing new can be approved —
  *    fail-closed, which is the point.
@@ -256,7 +265,38 @@ export class TollWardenEnforcer {
    * always runs after this gate. */
   private overrideAdmits(payment: PaymentDetails): boolean {
     if (!this.overrideAdmitsRecipient) return false;
-    return this.approvals.get(computePaymentCommitment(payment))?.verdict === "override:allow";
+    return this.findApproval(payment)?.approval.verdict === "override:allow";
+  }
+
+  /**
+   * Locate the approval for a payment: first by its exact commitment, then —
+   * when the payment carries a nonce — by the commitment of the same facts
+   * WITHOUT the nonce (a pre-sign approval, registered from the 402 offer
+   * before any nonce existed). Never widens beyond that: an approval with a
+   * nonce only ever matches that nonce.
+   */
+  private findApproval(payment: PaymentDetails): { commitment: string; approval: Approval } | null {
+    const exact = computePaymentCommitment(payment);
+    const a = this.approvals.get(exact);
+    if (a) return { commitment: exact, approval: a };
+    if (payment.nonce) {
+      const preSign = computePaymentCommitment({ ...payment, nonce: undefined });
+      const b = this.approvals.get(preSign);
+      if (b) return { commitment: preSign, approval: b };
+    }
+    return null;
+  }
+
+  /**
+   * The sign-time gate keyed by PAYMENT rather than by commitment: resolves
+   * the approval (exact, else pre-sign) and runs assertApproved on it.
+   * Returns the commitment that was consumed.
+   */
+  assertApprovedFor(payment: PaymentDetails, primaryType?: string): string {
+    const found = this.findApproval(payment);
+    const commitment = found?.commitment ?? computePaymentCommitment(payment);
+    this.assertApproved(commitment, primaryType);
+    return commitment;
   }
 
   /** Total atomic value of payment authorizations this enforcer has allowed
@@ -383,7 +423,7 @@ export class TollWardenEnforcer {
       // then the verdict/approval gate; count against the cumulative cap only
       // when both have passed and the signature is about to happen.
       enforcer.assertPolicy(payment, td.primaryType);
-      enforcer.assertApproved(computePaymentCommitment(payment), td.primaryType);
+      enforcer.assertApprovedFor(payment, td.primaryType);
       enforcer.recordAuthorized(payment);
       return signer.signTypedData(...args);
     };

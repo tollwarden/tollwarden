@@ -802,6 +802,45 @@ fx_enforcer.approve(FIXTURE["scan"], FIXTURE["payment"])
 check("Node-signed attestation drives the Python gate end to end",
       fx_guarded.sign_typed_data(typed_data_for(FIXTURE["payment"])) == "0xsigned")
 
+print("\n— pre-sign approvals: the offer has no nonce, the authorization does —")
+# The default path scans the 402 OFFER; the x402 client mints the EIP-3009
+# nonce only when it signs. The enforcer must match the two (audit 2026-09-19:
+# they did not, so the shipped wrapper could never satisfy guard_signer).
+offer = {k: v for k, v in base_payment.items() if k != "nonce"}
+enforcer = TollWardenEnforcer(trusted_key_hex=PINNED)
+wallet = FakeSigner()
+guarded = enforcer.guard_signer(wallet)
+enforcer.approve(make_scan(offer, "outgoing"), offer)
+check("a nonce-less (pre-sign) approval admits the authorization once the nonce exists",
+      guarded.sign_typed_data(typed_data_for(dict(offer, nonce="0xpre1"))) == "0xsigned" and len(wallet.signed) == 1)
+e = expect_refusal(guarded.sign_typed_data, typed_data_for(dict(offer, nonce="0xpre2")))
+check("...and exactly once: a second nonce on the same facts is refused (single-use)",
+      e is not None and "already used" in str(e) and len(wallet.signed) == 1)
+
+# The pre-sign approval binds the FACTS: any other amount/recipient is refused.
+e2 = TollWardenEnforcer(trusted_key_hex=PINNED)
+e2.approve(make_scan(offer, "outgoing"), offer)
+w2 = FakeSigner()
+check("a pre-sign approval does not admit a different amount",
+      expect_refusal(e2.guard_signer(w2).sign_typed_data, typed_data_for(dict(offer, amount="20000", nonce="0xpre3"))) is not None and len(w2.signed) == 0)
+check("a pre-sign approval does not admit a different recipient",
+      expect_refusal(e2.guard_signer(w2).sign_typed_data, typed_data_for(dict(offer, pay_to="0xSomeoneElse0000000000000000000000000001", nonce="0xpre4"))) is not None and len(w2.signed) == 0)
+
+# An approval registered WITH a nonce still binds that exact nonce.
+e3 = TollWardenEnforcer(trusted_key_hex=PINNED)
+with_nonce = dict(offer, nonce="0xpre5")
+e3.approve(make_scan(with_nonce, "outgoing"), with_nonce)
+w3 = FakeSigner()
+check("a post-sign approval still requires its exact nonce",
+      expect_refusal(e3.guard_signer(w3).sign_typed_data, typed_data_for(dict(offer, nonce="0xpre6"))) is not None and len(w3.signed) == 0)
+check("...and signs when the nonce matches", e3.guard_signer(w3).sign_typed_data(typed_data_for(with_nonce)) == "0xsigned")
+
+# assert_approved_for reports which commitment it consumed.
+e4 = TollWardenEnforcer(trusted_key_hex=PINNED)
+c = e4.approve(make_scan(offer, "outgoing"), offer)
+check("assert_approved_for resolves a nonce-bearing payment to its pre-sign commitment",
+      e4.assert_approved_for(dict(offer, nonce="0xpre7")) == c)
+
 print("\n— wrap_transport_with_tollwarden (default payment path) —")
 
 OFFER_402 = {
@@ -890,6 +929,81 @@ try:
     check("strict mode refuses a flag verdict", False)
 except TollWardenBlockedError:
     check("strict mode refuses a flag verdict", payments["count"] == 0)
+
+
+# Composition: wrapper + enforcer + guarded signer. The wrapper registers the
+# offer's verdict; the client signs a nonce-bearing authorization; the enforcer
+# matches them. This is the enforced default path.
+def signing_paying_transport(signer, pay_to: str = "0xNiceMerchant00000000000000000000000000001"):
+    """What a real x402 client does: mint a nonce, ask the (guarded) signer for
+    the EIP-3009 signature, then retry with the payment header."""
+
+    def transport(method, url, headers, body):
+        entry = OFFER_402["accepts"][0]
+        signer.sign_typed_data(typed_data_for({
+            "network": entry["network"], "asset": entry["asset"], "pay_to": pay_to,
+            "amount": entry["maxAmountRequired"], "nonce": f"0xmint{time.time_ns():x}",
+        }))
+        payments["count"] += 1
+        return 200, {"content-type": "application/json"}, json.dumps({"data": "premium"}).encode()
+
+    return transport
+
+
+tollwarden = TollWardenClient(base_url=BASE, agent_id="wrap-enforced-py")
+enforcer = TollWardenEnforcer(trusted_key_hex=PINNED)
+wallet = FakeSigner()
+guarded = wrap_transport_with_tollwarden(
+    signing_paying_transport(enforcer.guard_signer(wallet)), tollwarden,
+    base_transport=merchant_transport(), enforcer=enforcer,
+)
+payments["count"] = 0
+status, _h, _b = guarded("GET", "https://merchant.example/premium", {}, None)
+check("wrapper + enforcer: the guarded signer signs the scanned offer's authorization",
+      status == 200 and payments["count"] == 1 and len(wallet.signed) == 1, (status, payments["count"], len(wallet.signed)))
+signed_td = wallet.signed[0][0][0] if wallet.signed and wallet.signed[0][0] else {}
+check("the signed authorization carried a nonce the offer never had",
+      str(signed_td.get("message", {}).get("nonce", "")).startswith("0xmint"))
+
+# Without the enforcer option the wrapper is advisory only: the guarded signer
+# has no approval and refuses — nothing is paid.
+w2 = FakeSigner()
+advisory_only = wrap_transport_with_tollwarden(
+    signing_paying_transport(enforcer.guard_signer(w2), "0xOtherMerchant0000000000000000000000000001"),
+    tollwarden, base_transport=merchant_transport("0xOtherMerchant0000000000000000000000000001"),
+)
+payments["count"] = 0
+check("without `enforcer`, a guarded signer refuses the unapproved authorization and nothing is paid",
+      expect_refusal(advisory_only, "GET", "https://merchant.example/premium", {}, None) is not None
+      and payments["count"] == 0 and len(w2.signed) == 0)
+
+# A block never reaches the enforcer: no approval is left behind.
+w3 = FakeSigner()
+blocked = wrap_transport_with_tollwarden(
+    signing_paying_transport(enforcer.guard_signer(w3), "0xBADdrain"), TollWardenClient(base_url=BASE),
+    base_transport=merchant_transport("0xBADdrain"), enforcer=enforcer,
+)
+payments["count"] = 0
+try:
+    blocked("GET", "https://merchant.example/premium", {}, None)
+    check("a blocked offer registers no approval and nothing is signed", False)
+except TollWardenBlockedError:
+    check("a blocked offer registers no approval and nothing is signed", payments["count"] == 0 and len(w3.signed) == 0)
+check("...and the enforcer still refuses that recipient afterwards",
+      expect_refusal(enforcer.guard_signer(w3).sign_typed_data, typed_data_for({**base_payment, "pay_to": "0xBADdrain", "nonce": "0xafterblock"})) is not None
+      and len(w3.signed) == 0)
+
+# A flag verdict with an allow-only enforcer: approve() refuses BEFORE any payment.
+strict_enforcer = TollWardenEnforcer(trusted_key_hex=PINNED)
+w4 = FakeSigner()
+flagged = wrap_transport_with_tollwarden(
+    signing_paying_transport(strict_enforcer.guard_signer(w4), "0xIFFYshop"), TollWardenClient(base_url=BASE),
+    base_transport=merchant_transport("0xIFFYshop"), enforcer=strict_enforcer,
+)
+payments["count"] = 0
+check("a flagged offer with an allow-only enforcer raises before the paying transport runs",
+      expect_refusal(flagged, "GET", "https://merchant.example/premium", {}, None) is not None
+      and payments["count"] == 0 and len(w4.signed) == 0)
 
 # Unparseable 402 fails CLOSED.
 tollwarden = TollWardenClient(base_url=BASE)

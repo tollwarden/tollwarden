@@ -110,7 +110,7 @@ const SCAN_PAYMENT_EXAMPLE = {
 
 const SCAN_INPUT_SCHEMA = {
   properties: {
-    agent_id: { type: "string", description: "Identifier of the scanning agent (scopes velocity limits)" },
+    agent_id: { type: "string", description: "Identifier of the scanning agent (labels the scan; velocity and history are scoped to your API key's account, and to agent_id only for anonymous scans)" },
     payment: {
       type: "object",
       description:

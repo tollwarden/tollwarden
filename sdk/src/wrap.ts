@@ -27,10 +27,29 @@
  * A block verdict throws TollWardenBlockedError BEFORE any payment is signed —
  * the paying fetch is never invoked. Unparseable 402 offers fail CLOSED.
  * Non-402 responses pass through untouched with zero added latency.
+ *
+ * With `enforcer` set, the wrapper also registers each passing outgoing
+ * verdict with a TollWardenEnforcer, so a signer wrapped by
+ * `enforcer.guardSigner()` inside the paying fetch will sign exactly the
+ * authorization that was scanned — the offer has no nonce yet, and the
+ * enforcer matches the later nonce-bearing authorization to the pre-sign
+ * approval (see enforce.ts). This is the composition that makes the default
+ * path enforced rather than advisory:
+ *
+ *     const enforcer = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+ *     const account  = enforcer.guardSigner(privateKeyToAccount(KEY));
+ *     const pay      = wrapFetchWithPayment(fetch, x402ClientFor(account));
+ *     const fetchWithPay = wrapFetchWithTollWarden(pay, tollwarden, { enforcer });
  */
 import { TollWardenBlockedError, TollWardenError, type TollWardenClient, type PaymentDetails, type ScanResponse } from "./index.ts";
+import type { TollWardenEnforcer } from "./enforce.ts";
 
 export interface WrapFetchOptions {
+  /** Register every passing outgoing verdict as signing authority with this
+   * enforcer (see the module comment). A verdict the enforcer refuses to
+   * approve — a flag without `allowFlagged`, for instance — throws
+   * TollWardenEnforcementError here, before the paying fetch runs. */
+  enforcer?: Pick<TollWardenEnforcer, "approve">;
   /** Non-paying fetch used for the initial probe. Default: globalThis.fetch. */
   baseFetch?: typeof fetch;
   /** Also throw on "flag" verdicts (default: only "block"). */
@@ -126,7 +145,11 @@ export function wrapFetchWithTollWarden(
       }
     }
 
-    // 3) Verdict passed — let the payment-capable fetch do the x402 dance.
+    // 3) Verdicts passed — hand signing authority to the enforcer (if any),
+    //    then let the payment-capable fetch do the x402 dance. Registered
+    //    only now, after BOTH scans, so an offer the incoming scan refused
+    //    never leaves an approval behind.
+    opts.enforcer?.approve(outgoing, offer);
     const started = Date.now();
     const paid = await paymentFetch(input, init);
 

@@ -26,6 +26,18 @@ Flow on a 402:
 
 A block verdict raises TollWardenBlockedError BEFORE any payment is signed — the
 paying transport is never invoked. Unparseable 402 offers fail CLOSED.
+
+With ``enforcer`` set, the wrapper also registers each passing outgoing
+verdict with a TollWardenEnforcer, so a signer wrapped by
+``enforcer.guard_signer()`` inside the paying transport signs exactly the
+authorization that was scanned — the offer has no nonce yet, and the enforcer
+matches the later nonce-bearing authorization to the pre-sign approval (see
+enforce.py). This is the composition that makes the default path enforced
+rather than advisory:
+
+    enforcer = TollWardenEnforcer(trusted_key_hex=PINNED)
+    account  = enforcer.guard_signer(Account.from_key(KEY))
+    guarded  = wrap_transport_with_tollwarden(paying_transport_for(account), tollwarden, enforcer=enforcer)
 """
 from __future__ import annotations
 
@@ -77,6 +89,7 @@ def wrap_transport_with_tollwarden(
     expected_price_usd: Optional[Any] = None,  # float or callable(offer)->float
     on_scan: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     report_outcomes: bool = True,
+    enforcer: Optional[Any] = None,
 ) -> Transport:
     """Wrap an x402 payment-capable transport so every payment is scanned first.
 
@@ -92,6 +105,13 @@ def wrap_transport_with_tollwarden(
                        (incl. a second 402 after paying) -> not_delivered, with
                        mechanical evidence. Commitment-bound to the outgoing
                        scan; a reporting failure never affects the response.
+    enforcer:          a TollWardenEnforcer (anything with ``approve(scan, payment)``).
+                       Every passing outgoing verdict is registered as signing
+                       authority with it, so a guard_signer()-wrapped signer in
+                       the paying transport signs only what was scanned. A
+                       verdict the enforcer refuses (e.g. a flag without
+                       allow_flagged) raises TollWardenEnforcementError here,
+                       before the paying transport runs.
     """
     probe_transport = base_transport or _urllib_transport
 
@@ -135,7 +155,12 @@ def wrap_transport_with_tollwarden(
             if incoming["verdict"] == "block" or (strict and incoming["verdict"] == "flag"):
                 raise TollWardenBlockedError(incoming)
 
-        # 3) Verdicts passed — let the paying transport do the x402 dance.
+        # 3) Verdicts passed — hand signing authority to the enforcer (if any),
+        #    then let the paying transport do the x402 dance. Registered only
+        #    now, after BOTH scans, so an offer the incoming scan refused never
+        #    leaves an approval behind.
+        if enforcer is not None:
+            enforcer.approve(outgoing, offer)
         import threading
         import time as _time
 
