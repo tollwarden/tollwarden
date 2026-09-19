@@ -60,7 +60,7 @@ jobs:
           python -m pip install build
           python -m build
       - name: Publish tollwarden to PyPI (OIDC)
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2 — twine 7, accepts Metadata-Version 2.5
         with:
           packages-dir: sdk-python/dist
       - name: Record released version back to the repo
@@ -107,7 +107,7 @@ jobs:
           python -m pip install build
           python -m build
       - name: Publish langchain-tollwarden to PyPI (OIDC)
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2 — twine 7, accepts Metadata-Version 2.5
         with:
           packages-dir: integrations/langchain-tollwarden/dist
       - name: Record released version back to the repo
@@ -154,7 +154,7 @@ jobs:
           python -m pip install build
           python -m build
       - name: Publish crewai-tollwarden to PyPI (OIDC)
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2 — twine 7, accepts Metadata-Version 2.5
         with:
           packages-dir: integrations/crewai-tollwarden/dist
       - name: Record released version back to the repo
@@ -201,7 +201,7 @@ jobs:
           python -m pip install build
           python -m build
       - name: Publish nemo-tollwarden to PyPI (OIDC)
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2 — twine 7, accepts Metadata-Version 2.5
         with:
           packages-dir: integrations/nemo-tollwarden/dist
       - name: Record released version back to the repo
@@ -248,7 +248,7 @@ jobs:
           python -m pip install build
           python -m build
       - name: Publish agentkit-tollwarden to PyPI (OIDC)
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2 — twine 7, accepts Metadata-Version 2.5
         with:
           packages-dir: integrations/agentkit-tollwarden/dist
       - name: Record released version back to the repo
