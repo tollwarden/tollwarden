@@ -1,6 +1,6 @@
 {
   "name": "@tollwarden/client",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Official client SDK for TollWarden — the payment security firewall for x402 micropayments. Scan payments before settlement, auto-tag provenance for prompt-injection detection, verify Ed25519 verdict attestations, and subscribe to plans autonomously.",
   "type": "module",
   "main": "dist/index.js",
