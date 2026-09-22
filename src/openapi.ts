@@ -72,6 +72,15 @@ const ScanRequest = {
         },
         content: { type: "string", description: "The content the agent just read (tool result / fetched page), for injection analysis" },
         content_source_url: { type: "string" },
+        offer: {
+          type: "string",
+          description: "The raw 402 offer / discovery payload the payment terms came from. Enables offer-drift checks (payment vs the offer it came from); its pay_to is expected, not treated as injected.",
+        },
+        phase: {
+          type: "string",
+          enum: ["pre_sign", "post_sign"],
+          description: "pre_sign: scanning before the payment is signed, so a missing nonce is expected. Absent = post_sign (full replay coverage expected).",
+        },
       },
     },
     policy: {
@@ -570,6 +579,11 @@ export function openApiDoc(cfg: TollWardenConfig): object {
                         content_type: { type: "string" },
                         bytes: { type: "integer" },
                         latency_ms: { type: "integer" },
+                        settlement_receipt: {
+                          type: "string",
+                          enum: ["present", "absent"],
+                          description: "Whether the seller returned a settlement-receipt header. 'absent' records a receiptless settlement (counted and surfaced, never blocking).",
+                        },
                       },
                     },
                   },

@@ -25,7 +25,7 @@ The agent gets three actions — `tollwarden_scan_payment`, `tollwarden_check_re
 
 ## Two AgentKit-native touches
 
-**Wallet payer auto-fill.** `tollwarden_scan_payment` receives AgentKit's `wallet_provider`, so when you don't supply a `payer` it fills in the agent's own wallet address — scoping TollWarden's velocity and first-contact limits to *this* agent automatically. Supply `payer` explicitly to override.
+**Wallet payer auto-fill.** `tollwarden_scan_payment` receives AgentKit's `wallet_provider`, so when you don't supply a `payer` it fills in the agent's own wallet address, so every scan records which wallet is paying. Velocity and first-contact limits are scoped to your API key's account (the SDK mints one automatically); `payer` scopes them only for anonymous scans. Supply `payer` explicitly to override.
 
 **Provenance for injection detection.** TollWarden's strongest check catches payments whose *decision* came from content the agent just read. Pass that text as the scan action's optional **`content`** argument; if the `pay_to` address appears in it, the payment is blocked.
 

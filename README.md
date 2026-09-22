@@ -4,7 +4,7 @@
 
 [![x402](https://img.shields.io/badge/x402-v2-blue)](https://github.com/x402-foundation/x402)
 [![network](https://img.shields.io/badge/settles%20on-Base%20(USDC)-0052FF)](https://docs.cdp.coinbase.com/x402/quickstart-for-sellers)
-[![tests](https://img.shields.io/badge/tests-381%2F381-brightgreen)](test/run-tests.ts)
+[![tests](https://img.shields.io/badge/tests-563%2F563-brightgreen)](test/run-tests.ts)
 [![npm](https://img.shields.io/npm/v/@tollwarden/client?label=sdk)](https://www.npmjs.com/package/@tollwarden/client)
 [![license](https://img.shields.io/badge/license-BUSL--1.1-lightgrey)](LICENSE)
 
@@ -104,7 +104,7 @@ Each exposes the same three tools (scan / check reputation / report) plus a fram
 | `GET /v1/plans` | free | Machine-readable plan catalog (tiers, limits, subscribe mechanics) |
 | `GET /v1/usage` | free | Your key's own usage stats: scan/verdict counts, free-tier quota, plan status, and [approval-decision telemetry](#human-in-the-loop-step-up-approvals) (visible only to you) |
 | `POST /v1/trust/evaluate` | free | [x402 trust-provider interface](https://github.com/x402-foundation/x402/issues/2299) — sellers gate settlement on a payer's history (TrustQuery → PASS/FAIL/UNCERTAIN + evidence) |
-| `GET /dashboard` | free | Browser usage dashboard for your key (see [Dashboards](#dashboards)) |
+| `GET /dashboard` | free | Browser usage dashboard for your key (see [Dashboard](#dashboard)) |
 | `POST /v1/plans/subscribe` | plan price | Subscribe/renew a key on a plan — itself paid via x402, so agents upgrade autonomously |
 | `GET /.well-known/x402` | free | x402 manifest |
 | `GET /.well-known/agent-card.json` | free | Agent card |
@@ -239,7 +239,7 @@ npm install
 
 npm run dev            # local dev server — payments off
 npm run demo:replay    # replay-attack demo: fresh nonce ALLOW → reused nonce BLOCK
-npm test               # 381-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
+npm test               # 563-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
 npm run eval           # detection eval corpus: attack payloads + benign FP guards, graded via real scans (gates CI + publish)
 ```
 
@@ -295,7 +295,7 @@ Listed in the [official MCP registry](https://registry.modelcontextprotocol.io) 
 }
 ```
 
-Eleven tools over stdio: `scan_outgoing_payment`, `scan_incoming_payment`, `check_counterparty_reputation`, `report_counterparty`, `report_payment_outcome` (close the loop after settlement — builds measured delivery history), `mint_api_key`, `rotate_api_key` (leaked-key recovery — fresh secret, same account), `check_approval_status` (poll a human-in-the-loop approval), `get_plans`, `subscribe_plan`, and `verify_verdict_attestation` (full Ed25519 verification performed locally — pinned key, commitment recompute, expiry, plus the signed pin-evidence record: returns `pin_evidence` with pin age and named corroboration sources). Defaults to the production service; set `TOLLWARDEN_URL` to point elsewhere.
+Twelve tools over stdio: `scan_outgoing_payment`, `scan_incoming_payment`, `check_counterparty_reputation`, `report_counterparty`, `report_payment_outcome` (close the loop after settlement — builds measured delivery history), `dispute_reputation` (wallet-signed rebuttal shown alongside reports — never erases them), `mint_api_key`, `rotate_api_key` (leaked-key recovery — fresh secret, same account), `check_approval_status` (poll a human-in-the-loop approval), `get_plans`, `subscribe_plan`, and `verify_verdict_attestation` (full Ed25519 verification performed locally — pinned key, commitment recompute, expiry, plus the signed pin-evidence record: returns `pin_evidence` with pin age and named corroboration sources). Defaults to the production service; set `TOLLWARDEN_URL` to point elsewhere.
 
 ## Detection defaults (hosted service)
 
@@ -326,7 +326,7 @@ src/
   api.ts          Framework-agnostic handlers (both servers route here)
   scanner.ts      Detector orchestration, tiering, verdict aggregation
   detectors/      pii · replay · overpayment · injection (fast + deep) · urlrisk
-                  asset · badlist · pinning · poisoning · scoutscore · velocity
+                  asset · badlist · pinning · poisoning · scoutscore · velocity · offerdrift
   reputation.ts   Shared report registry
   outcomes.ts     Delivery-outcome ledger (commitment-bound) + delivery check
   approvals.ts    Human-in-the-loop step-up approvals (webhook + overrides)
@@ -336,10 +336,10 @@ src/
   verdictsign.ts  Ed25519 verdict attestation
   manifest.ts     /.well-known/x402 + agent card + ERC-8004 registration
   store.ts        JSON-file-backed state (tiny interface)
-mcp/server.ts     MCP server (11 tools — npx tollwarden)
+  auditlog.ts     Tamper-evident hash-chained decision log
+  commitment.ts   Payment hashing (attestation binding + audit digest)
+mcp/server.ts     MCP server (12 tools — npx tollwarden)
 examples/         replay-demo.ts — reused-nonce attack blocked end-to-end
-auditlog.ts       Tamper-evident hash-chained decision log
-  commitment.ts     Payment hashing (attestation binding + audit digest)
 test/             563-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
 eval/             detection eval corpus + runner (attacks must catch, benign must pass — npm run eval, gates CI)
 sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 127 tests)

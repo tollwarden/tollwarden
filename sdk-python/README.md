@@ -140,7 +140,7 @@ tollwarden.reputation("0xsomeone...")                           # report summary
 
 ## API surface
 
-`TollWardenClient` — `scan_outgoing`, `scan_incoming`, `guard_outgoing`, `guard_incoming`, `observe`, `note_planning`, `note_user_instruction`, `get_plans`, `subscribe`, `report`, `reputation`, `ensure_api_key`, `verdict_key`, plus `free_calls_remaining` / `plan` state.
+`TollWardenClient` — `scan_outgoing`, `scan_incoming`, `guard_outgoing`, `guard_incoming`, `observe`, `note_planning`, `note_user_instruction`, `wait_for_approval`, `configure_approvals`, `report_outcome`, `get_plans`, `subscribe`, `report`, `reputation`, `ensure_api_key`, `verdict_key`, plus `free_calls_remaining` / `plan` state.
 Payment path — `wrap_transport_with_tollwarden`, `payment_from_offer`.
 Enforcement — `TollWardenEnforcer` (`approve`, `guard_signer`, `assert_approved`, `assert_approved_for`, `revoke`, `clear`), `payment_from_typed_data`.
 Standalone — `verify_attestation`, `compute_payment_commitment`.

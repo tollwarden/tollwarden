@@ -616,6 +616,10 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
         "GET /.well-known/erc8004.json": "Free. ERC-8004 agent registration file (on-chain identity tokenURI).",
         "GET /.well-known/tollwarden-verdict-key": "Free. Ed25519 public key for verdict attestations.",
         "GET /health": "Free. Liveness.",
+        "GET /v1/audit/head": "Free. Current head of the tamper-evident, hash-chained decision log (sequence + hash, no record contents) — for external monitoring and anchoring.",
+        "GET /v1/audit/verify": "Free. Re-verifies the whole audit hash chain and reports the result (no record contents exposed).",
+        "GET /llms.txt": "Free. Agent/LLM-facing integration guide (plain text; also at /.well-known/llms.txt).",
+        "GET /openapi.json": "Free. OpenAPI description of this API.",
         "GET /v1/stats": "Free. Public aggregate service stats with third-party and first-party (operator-owned) usage reported separately, so the operator's own agents never inflate the headline figures. Scan totals, verdict split, distinct agents, self-measured 90-day uptime. Cached ~5 min; aggregates only.",
         "GET /terms": "Free. Terms of Use (human-readable).",
         "GET /privacy": "Free. Privacy Policy (human-readable).",
@@ -635,6 +639,8 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
         "velocity: rate, hourly spend cap, first-contact size cap (outgoing) — scoped to your API key's account, not to a request field",
         "reputation: shared counterparty report registry v2 — 90-day half-life time decay, reporter-credibility weighting (observed payment history counts more than fresh anonymous ids), signed wallet rebuttals surfaced alongside reports",
         "delivery: measured, commitment-bound delivery-outcome history per counterparty (flag-only — a clean payment to a seller who never ships still fails you)",
+        "drift: offer drift — when context.offer is supplied, the payment is compared against the offer it came from (pay_to, price, scheme, network, or asset changed, or no multi-rail leg matches → flag)",
+        "freshness: informational advisory when the offer sells recency, naming the check to run before reporting delivery",
       ],
       attestation:
         "Verdicts are Ed25519-signed (see /.well-known/tollwarden-verdict-key). Wallet policies can require a fresh allow-verdict before signing.",
@@ -660,6 +666,8 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
           origin: "planning | user_instruction | tool_result | fetched_content | unknown",
           content: "the content the agent just read (for injection analysis)",
           content_source_url: "https://...",
+          offer: "the raw 402 offer / discovery payload the payment terms came from (enables offer-drift checks; its pay_to is expected, not treated as injected)",
+          phase: "pre_sign | post_sign (pre_sign: scanning before signing, so a missing nonce is expected)",
         },
         policy: {
           force_deep: "boolean — run deep content analysis even below the micropayment threshold",

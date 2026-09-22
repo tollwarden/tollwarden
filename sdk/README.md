@@ -156,7 +156,7 @@ await tollwarden.reputation("0xsomeone…"); // report summary (paid / free-tier
 
 ## API surface
 
-`TollWardenClient` — `scanOutgoing`, `scanIncoming`, `guardOutgoing`, `guardIncoming`, `observe`, `notePlanning`, `noteUserInstruction`, `getPlans`, `subscribe`, `report`, `reputation`, `ensureApiKey`, `verdictKey`, plus `freeCallsRemaining` / `plan` state.
+`TollWardenClient` — `scanOutgoing`, `scanIncoming`, `guardOutgoing`, `guardIncoming`, `observe`, `notePlanning`, `noteUserInstruction`, `waitForApproval`, `configureApprovals`, `reportOutcome`, `getPlans`, `subscribe`, `report`, `reputation`, `ensureApiKey`, `verdictKey`, plus `freeCallsRemaining` / `plan` state.
 Payment path — `wrapFetchWithTollWarden`, `paymentFromOffer`.
 Enforcement — `TollWardenEnforcer` (`approve`, `guardSigner`, `assertApproved`, `assertApprovedFor`, `revoke`, `clear`), `paymentFromTypedData`.
 Standalone — `verifyAttestation`, `computePaymentCommitment`.

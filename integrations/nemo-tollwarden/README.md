@@ -12,7 +12,7 @@ Installing registers three NeMo functions via the `nat.plugins` entry point. Add
 functions:
   scan:
     _type: tollwarden_scan_payment
-    agent_id: my-agent          # optional; scopes velocity limits
+    agent_id: my-agent          # optional; labels scans (limits are scoped to your API key's account)
   reputation:
     _type: tollwarden_check_reputation
   report:

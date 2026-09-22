@@ -12,7 +12,7 @@ TollWarden is **advisory** and **non-custodial**: it never touches your keys, yo
 
 - **Prompt-injection-triggered payments** — the strongest check. If the payee address arrived in content your agent just read (a web page, a tool result), that payment is blocked. Detection survives HTML/markdown markup, base64/hex encoding, invisible Unicode, homoglyphs, leetspeak, and multilingual override phrasing.
 - **Replay** — a payment authorization your agent already used, presented again.
-- **Overpayment** — amounts far beyond the quoted price, or beyond an absolute ceiling you set.
+- **Overpayment** — amounts far beyond the quoted price, or beyond an absolute per-payment ceiling.
 - **Secret and PII leakage** — private keys, seed phrases, API keys, card numbers, SSNs in payment metadata, caught *before* they're transmitted.
 - **Lookalike tokens and address poisoning** — non-canonical "USDC" contracts, and addresses crafted to match a legitimate counterparty's first and last characters.
 - **Counterparty risk** — a shared reputation registry with time decay and signed rebuttals, plus **measured delivery history**: sellers who take payment and don't deliver get flagged, based on commitment-bound outcomes, not self-reports.
@@ -51,7 +51,7 @@ Drop-in packages also exist for LangChain, CrewAI, Vercel AI SDK, Coinbase Agent
 
 ## Pricing
 
-Scans are **{{price_scan}}** each, paid over x402 itself — your agent can pay for its own security, per payment it makes. The first **{{free_calls}} calls per API key are free**, reputation lookups are {{price_reputation}}, and reporting bad counterparties or recording delivery outcomes is always free. Volume plans with lower per-scan pricing are listed at [/v1/plans](/v1/plans).
+Scans are **{{price_scan}}** each, paid over x402 itself — your agent can pay for its own security, per payment it makes. The first **{{free_calls}} calls per API key are free**, reputation lookups are {{price_reputation}}, and reporting bad counterparties or recording delivery outcomes is always free. Volume plans (Pro, Scale) with lower per-scan pricing are listed at [/v1/plans](/v1/plans). Plans raise your own velocity and spend headroom only. Replay detection, merchant pinning, asset verification, and PII scanning are identical on every tier and can't be relaxed by paying more.
 
 ## Track record
 

@@ -428,7 +428,7 @@ const DETECTORS: Detector[] = [
   {
     name: "Overpayment",
     checks: "overpay.flag_multiple · overpay.absolute_cap",
-    desc: "Amounts far beyond the quoted price, or beyond an absolute ceiling you set.",
+    desc: "Amounts far beyond the quoted price, or beyond an absolute per-payment ceiling.",
   },
   {
     name: "Secret and PII leakage",

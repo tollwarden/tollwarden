@@ -137,7 +137,7 @@ server.tool(
 
 server.tool(
   "check_counterparty_reputation",
-  "Check whether a counterparty wallet address has been reported by other agents BEFORE dealing with it — scam, non-delivery, prompt injection, overcharge, impersonation, or replay abuse. Returns report counts, distinct-reporter count, and a risk level.",
+  "Check whether a counterparty wallet address has been reported by other agents BEFORE dealing with it — scam, non-delivery, prompt injection, overcharge, impersonation, or replay abuse. Returns report counts, distinct-reporter count, a time-decayed weighted score and risk level, any signed rebuttals from the wallet owner, injection-incident history, and measured delivery-outcome history.",
   { address: z.string().describe("Wallet address to look up") },
   async ({ address }) => ({
     content: [{ type: "text", text: await call("GET", `/v1/reputation/${encodeURIComponent(address)}`) }],

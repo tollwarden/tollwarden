@@ -1,6 +1,6 @@
 # TollWarden — submission-ready listing copy
 
-Service URL: `https://tollwarden.com` (custom domain). Ensure the domain is pointed at the deployment and live before submitting these listings.
+Service URL: `https://tollwarden.com` (custom domain, live).
 
 ---
 

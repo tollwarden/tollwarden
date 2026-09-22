@@ -143,7 +143,9 @@ folding), incoming
 resource-URL risk, canonical-USDC verification (lookalike tokens),
 address-poisoning (including vanity-bait addresses planted in just-read
 content), known-bad lists, TOFU
-merchant pinning, velocity and spend caps, external trust signals, a shared
+merchant pinning, offer drift (pass the 402 offer as context.offer and the
+payment is compared against it: payee, price, scheme, network, asset),
+velocity and spend caps, external trust signals, a shared
 counterparty report registry, automatic injection-incident history (a wallet
 TollWarden caught being planted via prompt injection is flagged on every agent's
 future scans of it, even with no content in context), and measured
