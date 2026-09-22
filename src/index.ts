@@ -57,7 +57,7 @@ import { approvePageHtml } from "./approvepage.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
 import { handleOutcomeReport } from "./outcomes.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 
@@ -326,9 +326,11 @@ if (cfg.mode === "live") {
 // homepage rendered from HOME.md; agents and curl (Accept: */*) keep getting
 // the self-documenting JSON that llms.txt and existing tooling point at.
 app.get("/", (req, res) => {
+  // Same URL, two representations: caches and crawlers must key on Accept.
+  res.vary("Accept");
   const home = homePageHtml(cfg, publicStats(store));
   if (home !== null && req.accepts(["json", "html"]) === "html") {
-    htmlPage(home, res);
+    htmlPage(home, res, "/");
     return;
   }
   const r = serviceInfo(cfg);
@@ -362,7 +364,7 @@ app.get("/.well-known/llms.txt", (_req, res) => {
 
 // Legal pages, rendered from the canonical TERMS.md / PRIVACY.md. Static HTML
 // with no script at all, so the CSP here doesn't even allow inline script.
-const htmlPage = (html: string | null, res: express.Response): void => {
+const htmlPage = (html: string | null, res: express.Response, path: string): void => {
   if (html === null) {
     res.status(404).json({ error: "Document not available in this deployment" });
     return;
@@ -373,10 +375,19 @@ const htmlPage = (html: string | null, res: express.Response): void => {
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
+  const canonical = canonicalLinkHeader(cfg, path);
+  if (canonical !== null) res.setHeader("Link", canonical);
   res.type("html").send(html);
 };
-app.get("/terms", (_req, res) => htmlPage(termsPageHtml(), res));
-app.get("/privacy", (_req, res) => htmlPage(privacyPageHtml(), res));
+app.get("/terms", (_req, res) => htmlPage(termsPageHtml(cfg), res, "/terms"));
+app.get("/privacy", (_req, res) => htmlPage(privacyPageHtml(cfg), res, "/privacy"));
+
+app.get("/robots.txt", (_req, res) => {
+  res.type("text/plain; charset=utf-8").send(robotsTxt(cfg));
+});
+app.get("/sitemap.xml", (_req, res) => {
+  res.type("application/xml; charset=utf-8").send(sitemapXml(cfg));
+});
 
 app.get("/.well-known/agent-card.json", (_req, res) => {
   res.json(agentCard(cfg));
@@ -470,6 +481,7 @@ app.get("/dashboard", (_req, res) => {
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Robots-Tag", NOINDEX);
   res.type("html").send(dashboardHtml());
 });
 
@@ -496,6 +508,7 @@ app.get("/admin", (_req, res) => {
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Robots-Tag", NOINDEX);
   res.type("html").send(adminDashboardHtml());
 });
 
@@ -558,6 +571,7 @@ app.get("/approve", (_req, res) => {
   );
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Robots-Tag", NOINDEX);
   res.type("html").send(approvePageHtml());
 });
 

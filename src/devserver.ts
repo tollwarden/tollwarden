@@ -33,7 +33,7 @@ import { dashboardHtml } from "./dashboard.ts";
 import { adminDashboardHtml } from "./admindash.ts";
 import { approvePageHtml } from "./approvepage.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
@@ -56,6 +56,12 @@ const trustLimiter = new RateLimiter(cfg.trustQueriesPerIpPerHour, 3600_000);
 const approvalLimiter = new RateLimiter(cfg.approvalActionsPerIpPerHour, 3600_000);
 const outcomesLimiter = new RateLimiter(cfg.outcomesPerIpPerHour, 3600_000);
 const LIMITED: ApiResult = { status: 429, body: { error: "Rate limit exceeded for this endpoint. Try again later." } };
+
+/** Canonical `Link` header for an indexable page; none without a public https origin. */
+function canonicalHeader(path: string): Record<string, string> {
+  const link = canonicalLinkHeader(cfg, path);
+  return link === null ? {} : { link };
+}
 
 function readBody(req: import("node:http").IncomingMessage): Promise<unknown> {
   return new Promise((resolve) => {
@@ -91,10 +97,13 @@ const server = createServer(async (req, res) => {
           "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
+          "vary": "Accept",
+          ...canonicalHeader("/"),
         });
         res.end(home);
         return;
       }
+      res.setHeader("vary", "Accept");
       out = serviceInfo(cfg);
     }
     else if (method === "GET" && path === "/health")
@@ -146,7 +155,7 @@ const server = createServer(async (req, res) => {
     else if (method === "GET" && path === "/v1/usage")
       out = handleUsage(cfg, store, req.headers["x-api-key"] as string | undefined);
     else if (method === "GET" && (path === "/terms" || path === "/privacy")) {
-      const html = path === "/terms" ? termsPageHtml() : privacyPageHtml();
+      const html = path === "/terms" ? termsPageHtml(cfg) : privacyPageHtml(cfg);
       if (html === null) out = { status: 404, body: { error: "Document not available in this deployment" } };
       else {
         res.writeHead(200, {
@@ -154,10 +163,21 @@ const server = createServer(async (req, res) => {
           "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
+          ...canonicalHeader(path),
         });
         res.end(html);
         return;
       }
+    }
+    else if (method === "GET" && path === "/robots.txt") {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end(robotsTxt(cfg));
+      return;
+    }
+    else if (method === "GET" && path === "/sitemap.xml") {
+      res.writeHead(200, { "content-type": "application/xml; charset=utf-8" });
+      res.end(sitemapXml(cfg));
+      return;
     }
     else if (method === "GET" && (path === "/dashboard" || path === "/admin" || path === "/approve")) {
       res.writeHead(200, {
@@ -165,6 +185,7 @@ const server = createServer(async (req, res) => {
         "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         "x-content-type-options": "nosniff",
         "referrer-policy": "no-referrer",
+        "x-robots-tag": NOINDEX,
       });
       res.end(path === "/admin" ? adminDashboardHtml() : path === "/approve" ? approvePageHtml() : dashboardHtml());
       return;

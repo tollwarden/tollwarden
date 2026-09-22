@@ -48,6 +48,87 @@ function escapeHtml(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// ---------------------------------------------------------------------------
+// Search-engine metadata. Head tags only (meta, never <link> or <script>), so
+// the pages keep their zero-external-resource / no-script guarantees; the
+// canonical URL travels as an HTTP Link header instead (canonicalLinkHeader).
+// ---------------------------------------------------------------------------
+
+/** Indexable public pages: sitemap entries and the canonical-URL allowlist. */
+export const INDEXABLE_PATHS = ["/", "/terms", "/privacy"] as const;
+
+export const HOME_TITLE = "TollWarden — payment security firewall for AI agents";
+export const HOME_DESCRIPTION =
+  "Payment firewall for AI agents on x402: catches prompt-injection-triggered payments, replays, overpayment and lookalike tokens. Signed verdicts, non-custodial.";
+
+/**
+ * The public origin for canonical URLs, or null when it isn't a real https
+ * deployment (the localhost default, or PUBLIC_BASE_URL left unset) — a
+ * canonical pointing at localhost would tell crawlers to drop the page.
+ */
+export function canonicalOrigin(cfg: TollWardenConfig): string | null {
+  const base = cfg.publicBaseUrl.replace(/\/+$/, "");
+  return /^https:\/\/[^/]+$/.test(base) ? base : null;
+}
+
+export function canonicalUrl(cfg: TollWardenConfig, path: string): string | null {
+  const origin = canonicalOrigin(cfg);
+  return origin === null ? null : origin + (path === "/" ? "/" : path);
+}
+
+/** `Link: <url>; rel="canonical"` header value (RFC 8288; honored by Google). */
+export function canonicalLinkHeader(cfg: TollWardenConfig, path: string): string | null {
+  const url = canonicalUrl(cfg, path);
+  return url === null ? null : `<${url}>; rel="canonical"`;
+}
+
+function seoMeta(cfg: TollWardenConfig, title: string, description: string, path: string): string {
+  const url = canonicalUrl(cfg, path);
+  return [
+    `<meta name="description" content="${escapeHtml(description)}">`,
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:site_name" content="TollWarden">`,
+    `<meta property="og:title" content="${escapeHtml(title)}">`,
+    `<meta property="og:description" content="${escapeHtml(description)}">`,
+    ...(url === null ? [] : [`<meta property="og:url" content="${escapeHtml(url)}">`]),
+    `<meta name="twitter:card" content="summary">`,
+    `<meta name="twitter:title" content="${escapeHtml(title)}">`,
+    `<meta name="twitter:description" content="${escapeHtml(description)}">`,
+  ].join("\n");
+}
+
+/**
+ * robots.txt. The API and discovery JSON are for agents, not search results.
+ * /dashboard, /admin and /approve are deliberately NOT disallowed: they carry
+ * `X-Robots-Tag: noindex`, and a crawler blocked by robots.txt never fetches
+ * the page, so never sees the noindex — the URL could still be indexed.
+ */
+export function robotsTxt(cfg: TollWardenConfig): string {
+  const origin = canonicalOrigin(cfg);
+  return [
+    "User-agent: *",
+    "Allow: /",
+    "Disallow: /v1/",
+    "",
+    ...(origin === null ? [] : [`Sitemap: ${origin}/sitemap.xml`, ""]),
+  ].join("\n");
+}
+
+/** sitemap.xml over the indexable pages; empty urlset without a public https origin. */
+export function sitemapXml(cfg: TollWardenConfig): string {
+  const urls = INDEXABLE_PATHS.map((p) => canonicalUrl(cfg, p))
+    .filter((u): u is string => u !== null)
+    .map((u) => `  <url><loc>${escapeHtml(u)}</loc></url>`);
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls.join("\n")}
+</urlset>
+`;
+}
+
+/** Header for pages that must never appear in search results (dashboards, approvals). */
+export const NOINDEX = "noindex, nofollow";
+
 /** GitHub-style heading slug: "5. The reputation registry" -> "5-the-reputation-registry". */
 function slug(text: string): string {
   return text
@@ -186,13 +267,14 @@ const BASE_CSS = `
   footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
   footer a { color:var(--muted); }`;
 
-function markdownPageHtml(title: string, markdown: string): string {
+function markdownPageHtml(cfg: TollWardenConfig, title: string, description: string, path: string, markdown: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
+${seoMeta(cfg, title, description, path)}
 <style>
 ${BASE_CSS}
   .wrap { max-width:760px; margin:0 auto; padding:32px 20px 64px; }
@@ -207,8 +289,8 @@ ${renderMarkdown(markdown)}
 </html>`;
 }
 
-let termsCache: string | null | undefined;
-let privacyCache: string | null | undefined;
+// Rendered once per process; keyed by base URL because the page embeds it.
+const legalCache = new Map<string, string | null>();
 
 function fmtInt(n: number): string {
   return n.toLocaleString("en-US");
@@ -503,7 +585,8 @@ export function homePageHtml(cfg: TollWardenConfig, stats?: PublicStats | null):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TollWarden — payment security firewall for AI agents</title>
+<title>${escapeHtml(HOME_TITLE)}</title>
+${seoMeta(cfg, HOME_TITLE, HOME_DESCRIPTION, "/")}
 <style>
 ${HOME_CSS}
 </style>
@@ -514,18 +597,21 @@ ${homeBodyHtml(cfg, stats)}
 </html>`;
 }
 
-export function termsPageHtml(): string | null {
-  if (termsCache === undefined) {
-    const md = loadDoc("TERMS.md");
-    termsCache = md === null ? null : markdownPageHtml("TollWarden — Terms of Use", md);
+function legalPageHtml(cfg: TollWardenConfig, file: string, title: string, description: string, path: string): string | null {
+  const key = `${path}|${cfg.publicBaseUrl}`;
+  if (!legalCache.has(key)) {
+    const md = loadDoc(file);
+    legalCache.set(key, md === null ? null : markdownPageHtml(cfg, title, description, path, md));
   }
-  return termsCache;
+  return legalCache.get(key)!;
 }
 
-export function privacyPageHtml(): string | null {
-  if (privacyCache === undefined) {
-    const md = loadDoc("PRIVACY.md");
-    privacyCache = md === null ? null : markdownPageHtml("TollWarden — Privacy Policy", md);
-  }
-  return privacyCache;
+export function termsPageHtml(cfg: TollWardenConfig): string | null {
+  return legalPageHtml(cfg, "TERMS.md", "TollWarden — Terms of Use",
+    "Terms of Use for TollWarden, the advisory, non-custodial payment security firewall for AI agents using x402.", "/terms");
+}
+
+export function privacyPageHtml(cfg: TollWardenConfig): string | null {
+  return legalPageHtml(cfg, "PRIVACY.md", "TollWarden — Privacy Policy",
+    "What TollWarden records when your agent scans an x402 payment, and how long it is kept.", "/privacy");
 }

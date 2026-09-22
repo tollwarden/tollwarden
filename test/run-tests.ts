@@ -27,7 +27,7 @@ import { handleTrustEvaluate } from "../src/trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll, isPrivateAddress, validateWebhookUrl } from "../src/approvals.ts";
 import { handleOutcomeReport } from "../src/outcomes.ts";
 import { approvePageHtml } from "../src/approvepage.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml } from "../src/pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION } from "../src/pages.ts";
 import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/manifest.ts";
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
@@ -2810,8 +2810,8 @@ console.log("\n— markdown pages (/, /terms, /privacy) —");
   check("homepage pricing placeholders are filled from config",
     home !== null && home.includes(cfg.priceScan) && home.includes(`${cfg.freeCalls} calls per API key are free`) && !home.includes("{{"));
   check("homepage renders code fences", home !== null && home.includes("<pre><code>") && home.includes("mcpServers"));
-  const terms = termsPageHtml();
-  const privacy = privacyPageHtml();
+  const terms = termsPageHtml(cfg);
+  const privacy = privacyPageHtml(cfg);
   check("terms page renders from TERMS.md", terms !== null && terms.includes("Terms of Use") && terms.includes("Business Source License"));
   check("privacy page renders from PRIVACY.md", privacy !== null && privacy.includes("Privacy Policy") && privacy.includes("non-custodial"));
   const pages = [home ?? "", terms ?? "", privacy ?? ""];
@@ -2829,6 +2829,35 @@ console.log("\n— markdown pages (/, /terms, /privacy) —");
   check("markdown is HTML-escaped before inline markup", !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(rendered.join("")));
   check("homepage markup stays inside the static template's tag set",
     !/<(?!\/?(?:html|head|meta|title|style|body|div|main|nav|footer|span|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(home ?? ""));
+}
+
+console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) —");
+{
+  const live = { ...cfg, publicBaseUrl: "https://tollwarden.com/" };
+  const local = { ...cfg, publicBaseUrl: "http://localhost:4021" };
+  const home = homePageHtml(live)!;
+  const terms = termsPageHtml(live)!;
+  const privacy = privacyPageHtml(live)!;
+  check("every public page carries a description and Open Graph tags",
+    [home, terms, privacy].every((h) => h.includes('<meta name="description"') && h.includes('<meta property="og:title"') && h.includes('<meta name="twitter:card"')));
+  check("homepage description stays within the ~160-char snippet budget", HOME_DESCRIPTION.length <= 160);
+  check("og:url is the page's canonical https URL (trailing slash on the base is normalized)",
+    home.includes('content="https://tollwarden.com/"') && terms.includes('content="https://tollwarden.com/terms"'));
+  check("canonical travels as a Link header, so the pages keep zero <link> tags",
+    canonicalLinkHeader(live, "/privacy") === '<https://tollwarden.com/privacy>; rel="canonical"' && ![home, terms, privacy].some((h) => h.includes("<link")));
+  check("no canonical or og:url without a public https origin (never point crawlers at localhost)",
+    canonicalLinkHeader(local, "/") === null && !homePageHtml(local)!.includes("og:url") && !termsPageHtml(local)!.includes("og:url"));
+  const robots = robotsTxt(live);
+  check("robots.txt keeps the API out and points at the sitemap",
+    robots.includes("Disallow: /v1/") && robots.includes("Sitemap: https://tollwarden.com/sitemap.xml"));
+  check("robots.txt does not disallow the noindex pages (a blocked crawler never sees X-Robots-Tag)",
+    !/Disallow: \/(dashboard|admin|approve)/.test(robots));
+  check("robots.txt omits the Sitemap line without a public origin", !robotsTxt(local).includes("Sitemap:"));
+  const sitemap = sitemapXml(live);
+  check("sitemap lists exactly the indexable pages",
+    (sitemap.match(/<loc>/g) ?? []).length === 3 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
+      && !sitemap.includes("/dashboard") && !sitemap.includes("/admin") && !sitemap.includes("/approve"));
+  check("sitemap is an empty urlset without a public origin", !sitemapXml(local).includes("<loc>"));
 }
 
 console.log("\n— public stats + self-measured uptime (/, /v1/stats) —");
