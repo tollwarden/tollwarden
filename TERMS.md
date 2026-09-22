@@ -1,6 +1,6 @@
 # TollWarden — Terms of Use
 
-**Last updated: 2026-07-21**
+**Last updated: 2026-09-22**
 
 ## 1. What TollWarden is
 
@@ -31,6 +31,7 @@ The Service includes a shared registry where users may report wallet addresses a
 - **Reports are user-generated content.** They are self-asserted, unauthenticated, and are **not** verified by us. We do not endorse, adopt, or vouch for any report, and a report does not represent our opinion about any address or person.
 - Reports are provided for informational purposes only and must be independently verified before you rely on them. Unverified reports never cause the Service to hard-`block`; they raise a `flag` at most.
 - **If you submit a report,** you represent that it is truthful, based on your own genuine experience, not defamatory, and not submitted to harass, defraud, or gain competitive advantage. You are solely responsible for the content of your reports and you indemnify us against claims arising from them (see §9).
+- **Rebuttals:** the holder of a reported wallet may attach a signed rebuttal through the Service (`POST /v1/reputation/dispute`), proving control of the wallet by signing with its key. Rebuttals are shown alongside the reports and do not remove them. By submitting one, you represent that you control the wallet and that the statement is truthful. The same responsibilities as for reports apply.
 - **Disputes / removal:** if you believe an address has been reported inaccurately or maliciously, contact **abuse@tollwarden.com**. We may, at our discretion, remove, annotate, or decline to act on reports, but we are under no obligation to monitor, verify, or curate the registry.
 
 ## 6. Acceptable use
@@ -54,7 +55,9 @@ The Service, including its software, detection heuristics, models, documentation
 
 ## 7. Data handling
 
-When you submit a payment for scanning, its content is processed **in memory** to produce a verdict and is not retained in plaintext. For accountability we keep a tamper-evident audit record of each **decision** that stores a cryptographic hash of the payment and non-sensitive transaction facts (network, recipient address, verdict, timestamp) — **not** the plaintext descriptions, reasons, metadata, or other content you submit. Do not submit secrets or personal data you are not authorized to share. See our Privacy Policy at **https://tollwarden.com/privacy** for details. Audit records are retained for **24 months** (adjust to your compliance needs).
+When you submit a payment for scanning, its content is processed **in memory** to produce a verdict and is not retained in plaintext. For accountability we keep a tamper-evident audit record of each **decision** that stores a cryptographic hash of the payment and non-sensitive transaction facts (network, recipient address, USD amount, verdict, your `agent_id`, timestamp) — **not** the plaintext descriptions, reasons, metadata, or other content you submit. Audit records are retained for **24 months**. To enforce limits and detect attacks, we also keep pseudonymous account history keyed to a hash of your API key, such as recent payment rates, counterparties paid, and merchant addresses seen.
+
+**Human approvals** are opt-in. If you configure an approval webhook, we hold a short excerpt of each flagged payment (including up to 300 characters of its `description`) for about a day and send it to the destination you chose. You are responsible for that destination, for who can access it, and for the decisions made through the links we send there. Do not submit secrets or personal data you are not authorized to share. See our Privacy Policy at **https://tollwarden.com/privacy** for details.
 
 ## 8. Fees
 
