@@ -27,7 +27,7 @@ import { handleTrustEvaluate } from "../src/trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll, isPrivateAddress, validateWebhookUrl } from "../src/approvals.ts";
 import { handleOutcomeReport } from "../src/outcomes.ts";
 import { approvePageHtml } from "../src/approvepage.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION } from "../src/pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION, ogImagePng } from "../src/pages.ts";
 import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/manifest.ts";
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
@@ -2858,6 +2858,13 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
     (sitemap.match(/<loc>/g) ?? []).length === 3 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
       && !sitemap.includes("/dashboard") && !sitemap.includes("/admin") && !sitemap.includes("/approve"));
   check("sitemap is an empty urlset without a public origin", !sitemapXml(local).includes("<loc>"));
+  const png = ogImagePng();
+  check("og-image.png ships and is a 1200×630 PNG",
+    png !== null && png.subarray(1, 4).toString("ascii") === "PNG" && png.readUInt32BE(16) === 1200 && png.readUInt32BE(20) === 630);
+  check("public pages advertise the absolute preview image as a large card",
+    [home, terms, privacy].every((h) => h.includes('<meta property="og:image" content="https://tollwarden.com/og-image.png">') && h.includes('content="summary_large_image"')));
+  check("no og:image without a public origin (scrapers need an absolute URL)",
+    !homePageHtml(local)!.includes("og:image") && homePageHtml(local)!.includes('<meta name="twitter:card" content="summary">'));
 }
 
 console.log("\n— public stats + self-measured uptime (/, /v1/stats) —");

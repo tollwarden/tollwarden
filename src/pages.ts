@@ -26,17 +26,29 @@ import type { TollWardenConfig } from "./config.ts";
 import type { PublicStats } from "./pubstats.ts";
 import { PLANS } from "./plans.ts";
 
-function loadDoc(filename: string): string | null {
+function loadFile(filename: string): Buffer | null {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 5; i++) {
     try {
-      return readFileSync(join(dir, filename), "utf8");
+      return readFileSync(join(dir, filename));
     } catch {
       // keep walking up
     }
     dir = dirname(dir);
   }
   return null; // never crash the server over a missing doc; the route falls back
+}
+
+function loadDoc(filename: string): string | null {
+  return loadFile(filename)?.toString("utf8") ?? null;
+}
+
+let ogImageCache: Buffer | null | undefined;
+
+/** The 1200×630 link-preview image (og-image.png at the package root), or null if absent. */
+export function ogImagePng(): Buffer | null {
+  if (ogImageCache === undefined) ogImageCache = loadFile("og-image.png");
+  return ogImageCache;
 }
 
 function escapeHtml(s: string): string {
@@ -84,6 +96,8 @@ export function canonicalLinkHeader(cfg: TollWardenConfig, path: string): string
 
 function seoMeta(cfg: TollWardenConfig, title: string, description: string, path: string): string {
   const url = canonicalUrl(cfg, path);
+  // Preview scrapers need an absolute image URL, so no public origin -> no image.
+  const image = ogImagePng() === null ? null : canonicalUrl(cfg, "/og-image.png");
   return [
     `<meta name="description" content="${escapeHtml(description)}">`,
     `<meta property="og:type" content="website">`,
@@ -91,7 +105,13 @@ function seoMeta(cfg: TollWardenConfig, title: string, description: string, path
     `<meta property="og:title" content="${escapeHtml(title)}">`,
     `<meta property="og:description" content="${escapeHtml(description)}">`,
     ...(url === null ? [] : [`<meta property="og:url" content="${escapeHtml(url)}">`]),
-    `<meta name="twitter:card" content="summary">`,
+    ...(image === null ? [] : [
+      `<meta property="og:image" content="${escapeHtml(image)}">`,
+      `<meta property="og:image:width" content="1200">`,
+      `<meta property="og:image:height" content="630">`,
+      `<meta property="og:image:alt" content="TollWarden — the payment security firewall for AI agents">`,
+    ]),
+    `<meta name="twitter:card" content="${image === null ? "summary" : "summary_large_image"}">`,
     `<meta name="twitter:title" content="${escapeHtml(title)}">`,
     `<meta name="twitter:description" content="${escapeHtml(description)}">`,
   ].join("\n");

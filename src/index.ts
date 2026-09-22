@@ -57,7 +57,7 @@ import { approvePageHtml } from "./approvepage.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
 import { handleOutcomeReport } from "./outcomes.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 
@@ -402,6 +402,17 @@ app.get("/.well-known/erc8004.json", (_req, res) => {
 app.get("/logo.svg", (_req, res) => {
   res.setHeader("Cache-Control", "public, max-age=86400");
   res.type("image/svg+xml").send(logoSvg());
+});
+
+// Link-preview image referenced by og:image on the public pages.
+app.get("/og-image.png", (_req, res) => {
+  const png = ogImagePng();
+  if (png === null) {
+    res.status(404).json({ error: "Image not available in this deployment" });
+    return;
+  }
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.type("image/png").send(png);
 });
 
 // Canonical machine-readable API contract (x402scan discovery + agent tooling).

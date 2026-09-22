@@ -33,7 +33,7 @@ import { dashboardHtml } from "./dashboard.ts";
 import { adminDashboardHtml } from "./admindash.ts";
 import { approvePageHtml } from "./approvepage.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
@@ -127,6 +127,15 @@ const server = createServer(async (req, res) => {
       res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" });
       res.end(logoSvg());
       return;
+    }
+    else if (method === "GET" && path === "/og-image.png") {
+      const png = ogImagePng();
+      if (png === null) out = { status: 404, body: { error: "Image not available in this deployment" } };
+      else {
+        res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=86400" });
+        res.end(png);
+        return;
+      }
     }
     else if (method === "GET" && (path === "/.well-known/tollwarden-verdict-key" || path === "/.well-known/paysafe-verdict-key"))
       out = signer
