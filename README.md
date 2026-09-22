@@ -340,10 +340,10 @@ mcp/server.ts     MCP server (11 tools — npx tollwarden)
 examples/         replay-demo.ts — reused-nonce attack blocked end-to-end
 auditlog.ts       Tamper-evident hash-chained decision log
   commitment.ts     Payment hashing (attestation binding + audit digest)
-test/             381-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
+test/             563-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
 eval/             detection eval corpus + runner (attacks must catch, benign must pass — npm run eval, gates CI)
-sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 101 tests)
-sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 104 tests)
+sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 127 tests)
+sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 131 tests)
 ```
 
 Design notes: verdicts aggregate worst-first (any block ⇒ block); `risk_score` is severity-based with compounding for multiple independent findings; the detection core has **zero runtime dependencies**, so the full suite runs with `node --experimental-strip-types` and no install.

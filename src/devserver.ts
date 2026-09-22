@@ -33,7 +33,7 @@ import { dashboardHtml } from "./dashboard.ts";
 import { adminDashboardHtml } from "./admindash.ts";
 import { approvePageHtml } from "./approvepage.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, legacyHostRedirect } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
@@ -88,6 +88,16 @@ const server = createServer(async (req, res) => {
 
   let out: ApiResult;
   try {
+    // Same legacy-host rule as production (see index.ts).
+    const legacy = legacyHostRedirect(cfg, {
+      method, host: req.headers.host, path, search: url.search,
+      wantsHtml: /text\/html/.test(req.headers.accept ?? ""),
+    });
+    if (legacy !== null) {
+      res.writeHead(301, { location: legacy, "cache-control": "public, max-age=86400" });
+      res.end();
+      return;
+    }
     if (method === "GET" && path === "/") {
       // Same content negotiation as production: HTML for browsers, JSON otherwise.
       const home = homePageHtml(cfg, publicStats(store));

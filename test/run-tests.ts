@@ -27,7 +27,7 @@ import { handleTrustEvaluate } from "../src/trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll, isPrivateAddress, validateWebhookUrl } from "../src/approvals.ts";
 import { handleOutcomeReport } from "../src/outcomes.ts";
 import { approvePageHtml } from "../src/approvepage.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION, ogImagePng } from "../src/pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION, ogImagePng, legacyHostRedirect } from "../src/pages.ts";
 import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/manifest.ts";
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
@@ -2858,6 +2858,22 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
     (sitemap.match(/<loc>/g) ?? []).length === 3 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
       && !sitemap.includes("/dashboard") && !sitemap.includes("/admin") && !sitemap.includes("/approve"));
   check("sitemap is an empty urlset without a public origin", !sitemapXml(local).includes("<loc>"));
+  // Legacy-domain redirect: human pages move, machine traffic stays put.
+  const legacy = (over: Partial<Parameters<typeof legacyHostRedirect>[1]>, c = live) =>
+    legacyHostRedirect(c, { method: "GET", host: "paysafe-agent.com", path: "/", search: "", wantsHtml: true, ...over });
+  check("browser homepage on the old domain 301s to the canonical origin", legacy({}) === "https://tollwarden.com/");
+  check("legal pages redirect too, query string preserved, host case/port ignored",
+    legacy({ path: "/terms", search: "?ref=x" }) === "https://tollwarden.com/terms?ref=x"
+      && legacy({ path: "/privacy", host: "WWW.PaySafe-Agent.com:443" }) === "https://tollwarden.com/privacy");
+  check("JSON index on the old domain is served in place (agents/curl)", legacy({ wantsHtml: false }) === null);
+  check("old-SDK traffic is never redirected: POST scans, .well-known, llms.txt, API",
+    legacy({ method: "POST", path: "/v1/scan/outgoing" }) === null && legacy({ path: "/.well-known/erc8004.json" }) === null
+      && legacy({ path: "/.well-known/paysafe-verdict-key" }) === null && legacy({ path: "/llms.txt" }) === null
+      && legacy({ path: "/v1/plans" }) === null && legacy({ method: "POST", path: "/" }) === null);
+  check("dashboard and approve links on the old domain keep working in place",
+    legacy({ path: "/dashboard" }) === null && legacy({ path: "/approve" }) === null);
+  check("the canonical host itself never redirects (no loop)", legacy({ host: "tollwarden.com" }) === null);
+  check("no redirect without a public https origin", legacy({}, local) === null);
   const png = ogImagePng();
   check("og-image.png ships and is a 1200×630 PNG",
     png !== null && png.subarray(1, 4).toString("ascii") === "PNG" && png.readUInt32BE(16) === 1200 && png.readUInt32BE(20) === 630);

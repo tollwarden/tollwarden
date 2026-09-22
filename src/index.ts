@@ -57,7 +57,7 @@ import { approvePageHtml } from "./approvepage.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
 import { handleOutcomeReport } from "./outcomes.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, legacyHostRedirect } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 
@@ -322,6 +322,23 @@ if (cfg.mode === "live") {
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
+// Pre-rename domain: move the human pages (and their search ranking) to the
+// canonical origin; everything machine-facing keeps working in place. The
+// one-day max-age keeps a mistaken 301 from living in browsers forever.
+app.use((req, res, next) => {
+  const q = req.originalUrl.indexOf("?");
+  const target = legacyHostRedirect(cfg, {
+    method: req.method,
+    host: req.hostname,
+    path: req.path,
+    search: q < 0 ? "" : req.originalUrl.slice(q),
+    wantsHtml: req.accepts(["json", "html"]) === "html",
+  });
+  if (target === null) return next();
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.redirect(301, target);
+});
+
 // Content-negotiated index: browsers (Accept: text/html) get the human
 // homepage rendered from HOME.md; agents and curl (Accept: */*) keep getting
 // the self-documenting JSON that llms.txt and existing tooling point at.

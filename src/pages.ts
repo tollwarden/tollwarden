@@ -146,6 +146,33 @@ ${urls.join("\n")}
 `;
 }
 
+/**
+ * Pre-rename hostnames still attached to the service. They must keep serving
+ * everything machine-facing — old SDKs (< 0.6.0) default to this origin and
+ * POST scans there (a 301 can turn a POST into a GET), and the ERC-8004
+ * tokenURI on Base points at its /.well-known/erc8004.json — so only the
+ * human pages move.
+ */
+export const LEGACY_HOSTS: ReadonlySet<string> = new Set(["paysafe-agent.com", "www.paysafe-agent.com"]);
+
+/**
+ * 301 target for a browser request to an indexable page on a legacy host, or
+ * null to serve the request normally. `/` redirects only when the client asked
+ * for HTML: agents fetching the JSON index from the old origin keep getting it.
+ */
+export function legacyHostRedirect(
+  cfg: TollWardenConfig,
+  req: { method: string; host: string | undefined; path: string; search: string; wantsHtml: boolean },
+): string | null {
+  if (req.method !== "GET" && req.method !== "HEAD") return null;
+  const host = (req.host ?? "").toLowerCase().replace(/:\d+$/, "");
+  if (!LEGACY_HOSTS.has(host)) return null;
+  if (!(INDEXABLE_PATHS as readonly string[]).includes(req.path)) return null;
+  if (req.path === "/" && !req.wantsHtml) return null;
+  const target = canonicalUrl(cfg, req.path);
+  return target === null ? null : target + (req.search.startsWith("?") ? req.search : "");
+}
+
 /** Header for pages that must never appear in search results (dashboards, approvals). */
 export const NOINDEX = "noindex, nofollow";
 
