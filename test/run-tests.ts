@@ -24,10 +24,11 @@ import { dashboardHtml } from "../src/dashboard.ts";
 import { adminDashboardHtml } from "../src/admindash.ts";
 import { llmsTxt } from "../src/llms.ts";
 import { handleTrustEvaluate } from "../src/trust.ts";
-import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll, isPrivateAddress, validateWebhookUrl } from "../src/approvals.ts";
+import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll, isPrivateAddress, maybeCreateApproval, validateWebhookUrl } from "../src/approvals.ts";
+import { redactSecrets } from "../src/detectors/pii.ts";
 import { handleOutcomeReport } from "../src/outcomes.ts";
 import { approvePageHtml } from "../src/approvepage.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION, ogImagePng, legacyHostRedirect } from "../src/pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION, ogImagePng, legacyHostRedirect, explicitlyWantsJson } from "../src/pages.ts";
 import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/manifest.ts";
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
@@ -2460,6 +2461,98 @@ console.log("\n— human-in-the-loop approvals: end-to-end —");
   mock.close();
 }
 
+console.log("\n— approval excerpt: detected secrets/PII redacted (PRIVACY §3) —");
+{
+  const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "tw-approval-redact-"));
+  const store = new Store(dir);
+  const snapFile = join(dir, "tollwarden-store.json");
+  const signer = new VerdictSigner(null);
+
+  const deliveries: string[] = [];
+  const mock = createHttpServer((req, res) => {
+    let data = "";
+    req.on("data", (c) => (data += c));
+    req.on("end", () => {
+      deliveries.push(data);
+      res.writeHead(200);
+      res.end("ok");
+    });
+  });
+  await new Promise<void>((resolve) => mock.listen(0, resolve));
+  const hookUrl = `http://127.0.0.1:${(mock.address() as { port: number }).port}/hook`;
+  const waitForDeliveries = async (n: number) => {
+    const deadline = Date.now() + 4000;
+    while (deliveries.length < n && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  };
+
+  // Unit: the helper masks with the scan's own redacted form, and honors the
+  // scan's exemption (an address-shaped ?token= stays readable).
+  const apiKey = "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+  const redacted = redactSecrets(`use key ${apiKey} please`);
+  check("redactSecrets masks an API key to first 4 + last 2", !redacted.includes(apiKey) && redacted.includes(`sk-p…p6 (${apiKey.length} chars)`), redacted);
+  const tokenUrl = "https://api.example.com/q?token=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+  check("redactSecrets leaves the scan-exempt address-shaped ?token= alone", redactSecrets(tokenUrl) === tokenUrl);
+  const seed = "abandon ability able about above absent absorb abstract absurd abuse access accident";
+  check("redactSecrets masks a seed phrase", !redactSecrets(`backup: ${seed}`).includes("absorb abstract"));
+  check("redactSecrets is identity on clean prose", redactSecrets("Data access for 24h") === "Data access for 24h");
+
+  // (1) Real path: flag-level PII (email) in a FLAGGED scan opens an approval.
+  const key = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
+  handleApprovalConfig(store, cfg, key, { webhook_url: hookUrl });
+  const email = "alice.private@example.org";
+  const piiPayment = {
+    ...basePayment,
+    pay_to: "0xF1a6eedAttentionMerchant0000000000000002",
+    resource_url: `https://flagged.example.net/data?contact=${email}`,
+    description: `Report for ${email}`,
+    nonce: "0xredact1",
+  };
+  const piiScan = handleScan("outgoing", { payment: piiPayment, expected_price_usd: 0.01, context: { origin: "tool_result" } }, cfg, store, signer, key) as { body: any };
+  check("PII scan flags and opens an approval", piiScan.body.verdict === "flag" && piiScan.body.approval?.status === "pending" && piiScan.body.checks.some((c: { id: string }) => c.id === "pii.email"), piiScan.body.verdict);
+  const piiRec = store.approvals.get(piiScan.body.approval?.approval_id)!;
+  check("approval record: email redacted in description + resource_url", !JSON.stringify(piiRec.facts).includes(email) && piiRec.facts.description === `Report for ${redactSecrets(email)}`, piiRec.facts);
+  check("approval commitment still binds the ORIGINAL payment", piiRec.payment_commitment === paymentCommitment(piiPayment));
+  await waitForDeliveries(1);
+  check("JSON webhook payload carries only the redacted email", deliveries.length === 1 && !deliveries[0].includes(email) && deliveries[0].includes(redactSecrets(email)), deliveries[0]);
+
+  // (2) A secret in description BLOCKS the scan, so it never reaches an approval at all.
+  const blocked = handleScan("outgoing", { payment: { ...piiPayment, description: `auth ${apiKey}`, nonce: "0xredact2" }, expected_price_usd: 0.01, context: { origin: "tool_result" } }, cfg, store, signer, key) as { body: any };
+  check("API key in description blocks: no approval opened", blocked.body.verdict === "block" && blocked.body.approval === undefined);
+
+  // (3) Defense in depth: even if a secret-bearing payment reached approval
+  // creation as a flag (future pattern downgraded to flag, detector miss on
+  // the verdict path), record + both webhook formats carry the redacted form.
+  const slackKey = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
+  handleApprovalConfig(store, cfg, slackKey, { webhook_url: hookUrl, format: "slack" });
+  const secretUrl = `https://flagged.example.net/data?api_key=${apiKey}`;
+  const secretReq: ScanRequest = {
+    payment: { ...piiPayment, resource_url: secretUrl, description: `Bearer ${apiKey} for access`, nonce: "0xredact3" },
+    expected_price_usd: 0.01,
+  };
+  const flagScan = { scan_id: "redact-scan", direction: "outgoing", verdict: "flag", risk_score: 70, checks: [], scanned_at: new Date().toISOString(), advisory: "" } as unknown as ScanResponse;
+  for (const [k, label] of [[key, "json"], [slackKey, "slack"]] as const) {
+    const before = deliveries.length;
+    const att = maybeCreateApproval(store, cfg, store.resolveKey(k).hash!, flagScan, secretReq);
+    const rec = store.approvals.get(att?.approval_id ?? "")!;
+    check(`${label}: approval record holds only the redacted secret`, !!rec && !JSON.stringify(rec.facts).includes(apiKey) && rec.facts.description!.includes(redactSecrets(apiKey)), rec?.facts);
+    await waitForDeliveries(before + 1);
+    const body = deliveries[before] ?? "";
+    check(`${label}: webhook payload holds only the redacted secret`, body.length > 0 && !body.includes(apiKey) && !body.includes(apiKey.slice(4, -2)), body);
+  }
+
+  // Persisted snapshot: no plaintext secret or email on disk.
+  store.flush();
+  const onDisk = readFileSync(snapFile, "utf8");
+  check("store snapshot on disk carries no plaintext secret or email", onDisk.includes('"approvals"') && !onDisk.includes(apiKey) && !onDisk.includes(email));
+
+  mock.close();
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
+}
+
 console.log("\n— approval decision telemetry (owner-only) —");
 {
   const store = new Store(null);
@@ -2860,12 +2953,20 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
   check("sitemap is an empty urlset without a public origin", !sitemapXml(local).includes("<loc>"));
   // Legacy-domain redirect: human pages move, machine traffic stays put.
   const legacy = (over: Partial<Parameters<typeof legacyHostRedirect>[1]>, c = live) =>
-    legacyHostRedirect(c, { method: "GET", host: "paysafe-agent.com", path: "/", search: "", wantsHtml: true, ...over });
+    legacyHostRedirect(c, { method: "GET", host: "paysafe-agent.com", path: "/", search: "", explicitJson: false, ...over });
   check("browser homepage on the old domain 301s to the canonical origin", legacy({}) === "https://tollwarden.com/");
+  // Search Console's change-of-address validator and crawlers fetch with a
+  // wildcard or missing Accept; they must see the 301, not the JSON index.
+  check("wildcard or missing Accept is not a JSON request (crawlers get the 301)",
+    !explicitlyWantsJson("*/*") && !explicitlyWantsJson(undefined) && !explicitlyWantsJson("")
+      && !explicitlyWantsJson("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"));
+  check("only an explicit JSON Accept keeps the old-domain index in place",
+    explicitlyWantsJson("application/json") && explicitlyWantsJson("application/json, */*")
+      && !explicitlyWantsJson("text/html, application/json"));
   check("legal pages redirect too, query string preserved, host case/port ignored",
     legacy({ path: "/terms", search: "?ref=x" }) === "https://tollwarden.com/terms?ref=x"
       && legacy({ path: "/privacy", host: "WWW.PaySafe-Agent.com:443" }) === "https://tollwarden.com/privacy");
-  check("JSON index on the old domain is served in place (agents/curl)", legacy({ wantsHtml: false }) === null);
+  check("explicit-JSON index request on the old domain is served in place", legacy({ explicitJson: true }) === null);
   check("old-SDK traffic is never redirected: POST scans, .well-known, llms.txt, API",
     legacy({ method: "POST", path: "/v1/scan/outgoing" }) === null && legacy({ path: "/.well-known/erc8004.json" }) === null
       && legacy({ path: "/.well-known/paysafe-verdict-key" }) === null && legacy({ path: "/llms.txt" }) === null

@@ -41,6 +41,7 @@ import type { VerdictSigner } from "./verdictsign.ts";
 import type { ApiResult } from "./api.ts";
 import type { ScanRequest, ScanResponse } from "./types.ts";
 import { paymentCommitment } from "./commitment.ts";
+import { redactSecrets } from "./detectors/pii.ts";
 
 // ---------------------------------------------------------------------------
 // Webhook URL validation + SSRF-safe delivery
@@ -266,8 +267,12 @@ export function maybeCreateApproval(
     amount_usd: req.expected_price_usd ?? p.amount_usd,
     network: p.network,
     asset: p.asset,
-    resource_url: typeof p.resource_url === "string" ? p.resource_url.slice(0, 500) : undefined,
-    description: typeof p.description === "string" ? p.description.slice(0, 300) : undefined,
+    // PRIVACY §3: facts are persisted in the store snapshot and POSTed to the
+    // operator's webhook (possibly a Slack channel). Mask detected secrets/PII
+    // with the scan's own redaction BEFORE truncating, so a cut can never
+    // leave a partial secret the patterns no longer recognize.
+    resource_url: typeof p.resource_url === "string" ? redactSecrets(p.resource_url).slice(0, 500) : undefined,
+    description: typeof p.description === "string" ? redactSecrets(p.description).slice(0, 300) : undefined,
     agent_id: req.agent_id,
     risk_score: scan.risk_score,
     fired: scan.checks.filter((c) => c.verdict !== "allow").map((c) => c.id),

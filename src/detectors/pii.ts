@@ -173,6 +173,34 @@ function redact(s: string): string {
   return `${s.slice(0, 4)}…${s.slice(-2)} (${s.length} chars)`;
 }
 
+/**
+ * Replace every secret/PII match in `text` with the same redacted form scan
+ * responses report (`redact`). Same PATTERNS, same Luhn validation, same
+ * exemptions as `scanPii` — so anything a scan would report is masked, and an
+ * exempt match (an address-shaped `?token=0x…`) is left readable exactly as
+ * the scan leaves it unreported. Used wherever payment prose is persisted or
+ * forwarded (the approval excerpt: store snapshot + operator webhook).
+ */
+export function redactSecrets(text: string): string {
+  let out = text;
+  for (const p of PATTERNS) {
+    const g = new RegExp(p.re.source, p.re.flags.includes("g") ? p.re.flags : `${p.re.flags}g`);
+    out = out.replace(g, (m) => {
+      if (p.validate && !p.validate(m)) return m;
+      if (p.exempt && p.exempt(m)) return m;
+      return redact(m);
+    });
+  }
+  // Each pass strictly removes dictionary-shaped words, so this terminates;
+  // the cap is belt-and-braces.
+  for (let i = 0; i < 16; i++) {
+    const seed = looksLikeSeedPhrase(out);
+    if (!seed) break;
+    out = out.split(seed).join(redact(seed));
+  }
+  return out;
+}
+
 const SCANNED_FIELDS: Array<keyof PaymentDetails> = [
   "resource_url",
   "description",
