@@ -57,7 +57,7 @@ import { approvePageHtml } from "./approvepage.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
 import { handleOutcomeReport } from "./outcomes.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, legacyHostRedirect } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, legacyHostRedirect, explicitlyWantsJson } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 
@@ -332,7 +332,7 @@ app.use((req, res, next) => {
     host: req.hostname,
     path: req.path,
     search: q < 0 ? "" : req.originalUrl.slice(q),
-    wantsHtml: req.accepts(["json", "html"]) === "html",
+    explicitJson: explicitlyWantsJson(req.header("accept")),
   });
   if (target === null) return next();
   res.setHeader("Cache-Control", "public, max-age=86400");

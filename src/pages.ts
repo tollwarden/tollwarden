@@ -156,19 +156,32 @@ ${urls.join("\n")}
 export const LEGACY_HOSTS: ReadonlySet<string> = new Set(["paysafe-agent.com", "www.paysafe-agent.com"]);
 
 /**
- * 301 target for a browser request to an indexable page on a legacy host, or
- * null to serve the request normally. `/` redirects only when the client asked
- * for HTML: agents fetching the JSON index from the old origin keep getting it.
+ * True only when the client explicitly asked for JSON and not HTML
+ * (`Accept: application/json`). A missing Accept or a bare wildcard is NOT a JSON
+ * request: crawlers and Search Console's change-of-address validator fetch
+ * that way, and must see the 301.
+ */
+export function explicitlyWantsJson(accept: string | undefined): boolean {
+  const a = (accept ?? "").toLowerCase();
+  return a.includes("application/json") && !a.includes("text/html");
+}
+
+/**
+ * 301 target for a request to an indexable page on a legacy host, or null to
+ * serve the request normally. `/` stays in place only for clients that
+ * explicitly ask for JSON (agents reading the service index); everyone else,
+ * crawlers included, moves to the canonical origin — where the same content
+ * negotiation still serves JSON to curl.
  */
 export function legacyHostRedirect(
   cfg: TollWardenConfig,
-  req: { method: string; host: string | undefined; path: string; search: string; wantsHtml: boolean },
+  req: { method: string; host: string | undefined; path: string; search: string; explicitJson: boolean },
 ): string | null {
   if (req.method !== "GET" && req.method !== "HEAD") return null;
   const host = (req.host ?? "").toLowerCase().replace(/:\d+$/, "");
   if (!LEGACY_HOSTS.has(host)) return null;
   if (!(INDEXABLE_PATHS as readonly string[]).includes(req.path)) return null;
-  if (req.path === "/" && !req.wantsHtml) return null;
+  if (req.path === "/" && req.explicitJson) return null;
   const target = canonicalUrl(cfg, req.path);
   return target === null ? null : target + (req.search.startsWith("?") ? req.search : "");
 }
