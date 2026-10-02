@@ -99,8 +99,12 @@ How the binding works: the wrapped signer intercepts EIP-712 payment authorizati
 const enforcer    = new TollWardenEnforcer({ trustedKeyHex: await tollwarden.verdictKey() });
 const account     = enforcer.guardSigner(privateKeyToAccount(process.env.EVM_PRIVATE_KEY!));
 const fetchWithPay = wrapFetchWithTollWarden(wrapFetchWithPayment(fetch, x402ClientFor(account)), tollwarden, { enforcer });
-// every 402: scanned → verdict registered → the guarded account signs that authorization and nothing else
+
+tollwarden.notePlanning();   // or noteUserInstruction(), or observe() what the agent read
+await fetchWithPay(url);     // scanned → allow verdict registered → the guarded account signs that authorization and nothing else
 ```
+
+Both of the wrapper's scans send `context.phase: "pre_sign"`, so the server expects the missing nonce instead of flagging it (pass `phase: "pre_sign"` to `scanOutgoing` for the same effect when you scan an offer yourself). A nonce that is present is replay-checked either way. The enforcer approves only an allow verdict unless you set `allowFlagged`, so say where the decision came from before the request. An untagged decision flags `injection.unknown_origin`, and one prompted by content the agent just read flags `injection.untrusted_origin` unless your account (or a CDP-verified pin) already tied that payee to the domain and the content neither carries injection tells nor contains the payee address. The enforcer refuses either flag before anything is signed.
 
 The network in the commitment is the chain being signed, `eip155:<chainId>`. The wrapper scans and approves an x402 v1 seller's offer (`base`, `polygon`, `base-sepolia`, ...) under the CAIP-2 id of the chain the v1 client signs for, so a v1 seller's payment binds exactly as a v2 seller's does. If you call `approve()` yourself, pass the CAIP-2 id as well, because an approval over `"base"` never matches a signature.
 

@@ -312,6 +312,21 @@ check("url-less observation tagged tool_result", seen["scans"][-1]["body"]["cont
 client.scan_outgoing(base_payment, context={"origin": "user_instruction"})
 check("explicit context wins", seen["scans"][-1]["body"]["context"]["origin"] == "user_instruction")
 
+# Phase is WHEN the scan runs, not where the decision came from, so the option
+# rides along with the automatic tagging instead of replacing it.
+client.observe("tool output read before paying", source_url="https://api.example.com/page")
+client.scan_outgoing(base_payment, phase="pre_sign")
+phased = seen["scans"][-1]["body"]["context"]
+check("phase option is sent as context.phase and keeps the observation tagging",
+      phased.get("phase") == "pre_sign" and phased["origin"] == "fetched_content" and "read before paying" in phased.get("content", ""), phased)
+client.scan_incoming(base_payment, context={"origin": "planning", "phase": "pre_sign"})
+explicit_phase = seen["scans"][-1]["body"]["context"]
+check("explicit context.phase is forwarded", explicit_phase.get("phase") == "pre_sign" and explicit_phase["origin"] == "planning", explicit_phase)
+client.guard_outgoing(base_payment, context={"origin": "planning", "phase": "post_sign"}, phase="pre_sign")
+check("guard_outgoing forwards the phase option, which wins over context.phase", seen["scans"][-1]["body"]["context"].get("phase") == "pre_sign")
+client.scan_outgoing(base_payment)
+check("no phase is sent unless asked for", "phase" not in seen["scans"][-1]["body"]["context"])
+
 stale = TollWardenClient(base_url=BASE, observation_ttl_s=0.001)
 stale.observe("stale content")
 time.sleep(0.02)
@@ -1181,6 +1196,12 @@ out_ctx = seen["scans"][scans_before]["body"]["context"]
 offer_ctx = seen["scans"][scans_before + 1]["body"]["context"]
 check("observation feeds the outgoing scan", out_ctx["origin"] == "fetched_content" and "organic" in out_ctx.get("content", ""))
 check("offer scan does not reuse the consumed observation", offer_ctx["origin"] == "unknown", offer_ctx["origin"])
+# The offer has no nonce yet. Without pre_sign the real server flags
+# replay.no_nonce on every offer and an allow-only enforcer refuses every
+# payment; this mock allows regardless, so the server suite runs the TS wrapper
+# through the real scanner.
+check("both scans send context.phase pre_sign, alongside the observation",
+      out_ctx.get("phase") == "pre_sign" and offer_ctx.get("phase") == "pre_sign", (out_ctx, offer_ctx))
 
 # on_scan telemetry + scan_offer=False single-scan mode.
 tollwarden = TollWardenClient(base_url=BASE)

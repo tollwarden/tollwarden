@@ -233,6 +233,20 @@ console.log("\n— provenance auto-tagging —");
 
   await client.scanOutgoing(basePayment, { context: { origin: "user_instruction" } });
   check("explicit context wins", seen.scans.at(-1)!.body.context.origin === "user_instruction");
+
+  // Phase is WHEN the scan runs, not where the decision came from, so the
+  // option rides along with the automatic tagging instead of replacing it.
+  client.observe("tool output read before paying", { sourceUrl: "https://api.example.com/page" });
+  await client.scanOutgoing(basePayment, { phase: "pre_sign" });
+  const phased = seen.scans.at(-1)!.body.context;
+  check("phase option is sent as context.phase and keeps the observation tagging", phased.phase === "pre_sign" && phased.origin === "fetched_content" && String(phased.content).includes("read before paying"), phased);
+  await client.scanIncoming(basePayment, { context: { origin: "planning", phase: "pre_sign" } });
+  const explicitPhase = seen.scans.at(-1)!.body.context;
+  check("explicit context.phase is forwarded", explicitPhase.phase === "pre_sign" && explicitPhase.origin === "planning", explicitPhase);
+  await client.guardOutgoing(basePayment, { context: { origin: "planning", phase: "post_sign" }, phase: "pre_sign" });
+  check("guardOutgoing forwards the phase option, which wins over context.phase", seen.scans.at(-1)!.body.context.phase === "pre_sign");
+  await client.scanOutgoing(basePayment);
+  check("no phase is sent unless asked for", !("phase" in seen.scans.at(-1)!.body.context));
 }
 {
   const client = new TollWardenClient({ baseUrl: BASE, observationTtlMs: 1 });
@@ -1110,6 +1124,11 @@ function signingPayingFetch(signer: TypedDataSigner): typeof fetch {
   const offerCtx = seen.scans[scansBefore + 1]!.body.context;
   check("observation feeds the outgoing scan", outgoingCtx.origin === "fetched_content" && String(outgoingCtx.content).includes("organic"), outgoingCtx);
   check("offer scan does not reuse the consumed observation", offerCtx.origin === "unknown", offerCtx.origin);
+  // The offer has no nonce yet. Without pre_sign the real server flags
+  // replay.no_nonce on every offer and an allow-only enforcer refuses every
+  // payment; this mock allows regardless, so the server suite runs the same
+  // wrapper through the real scanner.
+  check("both scans send context.phase pre_sign, alongside the observation", outgoingCtx.phase === "pre_sign" && offerCtx.phase === "pre_sign", { outgoingCtx, offerCtx });
 }
 {
   // onScan telemetry + scanOffer:false single-scan mode.

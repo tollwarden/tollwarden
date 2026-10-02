@@ -27,6 +27,10 @@ Flow on a 402:
 A block verdict raises TollWardenBlockedError BEFORE any payment is signed — the
 paying transport is never invoked. Unparseable 402 offers fail CLOSED.
 
+Both scans send ``context.phase: "pre_sign"``: they run before signing, and an
+offer has no nonce. Without it the server flags replay.no_nonce on every offer,
+and an allow-only enforcer refuses every payment.
+
 With ``enforcer`` set, the wrapper also registers each passing outgoing
 verdict with a TollWardenEnforcer, so a signer wrapped by
 ``enforcer.guard_signer()`` inside the paying transport signs exactly the
@@ -38,6 +42,11 @@ rather than advisory:
     enforcer = TollWardenEnforcer(trusted_key_hex=PINNED)
     account  = enforcer.guard_signer(Account.from_key(KEY))
     guarded  = wrap_transport_with_tollwarden(paying_transport_for(account), tollwarden, enforcer=enforcer)
+
+An allow-only enforcer approves only an allow verdict, so tag where the
+decision came from before the request (``tollwarden.note_planning()``,
+``note_user_instruction()`` or ``observe()``). An untagged scan flags
+injection.unknown_origin, and that flag is refused before anything is signed.
 """
 from __future__ import annotations
 
@@ -200,7 +209,9 @@ def wrap_transport_with_tollwarden(
         expected = expected_price_usd(offer) if callable(expected_price_usd) else expected_price_usd
 
         # 1) Outgoing scan FIRST — it must consume the provenance observation.
-        outgoing = tollwarden.scan_outgoing(offer, expected_price_usd=expected)
+        # ``phase`` rides alongside that provenance (see _build_context), it
+        # does not replace it.
+        outgoing = tollwarden.scan_outgoing(offer, expected_price_usd=expected, phase="pre_sign")
         if on_scan:
             on_scan("outgoing", outgoing)
         if outgoing["verdict"] == "block" or (strict and outgoing["verdict"] == "flag"):
@@ -208,7 +219,7 @@ def wrap_transport_with_tollwarden(
 
         # 2) The offer itself, as an incoming payment request.
         if scan_offer:
-            incoming = tollwarden.scan_incoming(offer, expected_price_usd=expected)
+            incoming = tollwarden.scan_incoming(offer, expected_price_usd=expected, phase="pre_sign")
             if on_scan:
                 on_scan("incoming", incoming)
             if incoming["verdict"] == "block" or (strict and incoming["verdict"] == "flag"):

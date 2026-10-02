@@ -34,8 +34,9 @@ import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
 import { pinEvidenceFor } from "../src/detectors/pinning.ts";
-import { paymentFromOffer } from "../sdk/src/wrap.ts";
+import { paymentFromOffer, wrapFetchWithTollWarden } from "../sdk/src/wrap.ts";
 import { TollWardenEnforcer, TollWardenEnforcementError } from "../sdk/src/enforce.ts";
+import { TollWardenClient } from "../sdk/src/index.ts";
 import { createServer as createHttpServer } from "node:http";
 import type { ScanRequest, ScanResponse } from "../src/types.ts";
 
@@ -1011,6 +1012,80 @@ console.log("\n— asset verification: x402 v1 network names resolve to CAIP-2 �
   v1Refusal = null;
   try { await rawEnforcer.guardSigner(v1Wallet).signTypedData(baseAuthorization("0xv1k")); } catch (e) { v1Refusal = e; }
   check("…whereas an approval over the raw \"base\" string is refused at sign time (fail-closed)", v1Refusal instanceof TollWardenEnforcementError && v1Wallet.signed === 1, (v1Refusal as Error | null)?.message);
+}
+
+console.log("\n— SDK enforced payment path through the real scanner —");
+{
+  // The real wrapFetchWithTollWarden and TollWardenClient, with every scan
+  // request handed to the real handleScan in-process, so the context checked
+  // here is the one the wrapper actually sends. The SDK suites' mock servers
+  // allow by pay_to marker and cannot show this. Before 2026-10-02 neither
+  // SDK sent context.phase, every offer scan flagged replay.no_nonce, and an
+  // allow-only enforcer refused every payment on the documented enforced path.
+  const e2eSigner = new VerdictSigner(null);
+  const e2ePinned = (e2eSigner.publicKeyInfo() as { public_key_spki_hex: string }).public_key_spki_hex;
+  const entry = { scheme: "exact", network: "eip155:8453", maxAmountRequired: "10000", payTo: "0x" + "e".repeat(40), asset: CANONICAL_USDC["eip155:8453"], resource: "https://seller.example/report", description: "Report", extra: { name: "USD Coin", version: "2" } };
+  const authorization = (nonce: string) => ({
+    domain: { name: "USD Coin", version: "2", chainId: 8453, verifyingContract: entry.asset },
+    primaryType: "TransferWithAuthorization",
+    message: { from: "0x" + "a".repeat(40), to: entry.payTo, value: entry.maxAmountRequired, validAfter: 0, validBefore: 9999999999, nonce },
+  });
+  const minted = "0x" + "1".repeat(64);
+
+  // One buyer per call: a client whose scans reach handleScan, an allow-only
+  // enforcer, and a paying fetch that does what an x402 client does after the
+  // wrapper hands over (mint a nonce, sign with the guarded account, retry).
+  async function payThroughWrapper(tag: (c: TollWardenClient) => void) {
+    const store = new Store(null);
+    const scans: Array<{ body: any; verdict: string; ids: string[]; res: any }> = [];
+    const toServer = (async (url: string, init: { body: string }) => {
+      const m = new URL(url).pathname.match(/^\/v1\/scan\/(outgoing|incoming)$/);
+      if (!m) return new Response("{}", { status: 404 });
+      const body = JSON.parse(init.body);
+      const r = handleScan(m[1] as "outgoing" | "incoming", body, cfg, store, e2eSigner, undefined) as { status: number; body: any };
+      scans.push({ body, verdict: r.body.verdict, ids: r.body.checks.map((c: { id: string }) => c.id), res: r.body });
+      return new Response(JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    // agentId as in the README; without it (and no key) velocity.unscoped flags.
+    const client = new TollWardenClient({ baseUrl: "https://tollwarden.test", fetch: toServer, autoKey: false, verdictKeyHex: e2ePinned, agentId: "e2e-enforced" });
+    tag(client);
+    const enforcer = new TollWardenEnforcer({ trustedKeyHex: e2ePinned });
+    const wallet = { nonces: [] as string[], async signTypedData(...args: unknown[]) { this.nonces.push(String((args[0] as { message: { nonce: string } }).message.nonce)); return "0xsigned"; } };
+    const account = enforcer.guardSigner(wallet);
+    const paying = (async () => {
+      await account.signTypedData(authorization(minted));
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const offer402 = (async () => new Response(JSON.stringify({ x402Version: 2, accepts: [entry] }), { status: 402, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const guarded = wrapFetchWithTollWarden(paying, client, { enforcer, baseFetch: offer402, reportOutcomes: false });
+    let status: number | null = null;
+    let error: unknown = null;
+    try { status = (await guarded(entry.resource)).status; } catch (e) { error = e; }
+    return { scans, wallet, account, status, error };
+  }
+
+  const planned = await payThroughWrapper((c) => c.notePlanning());
+  const [out, inc] = planned.scans;
+  check("the wrapper sends context.phase pre_sign on both offer scans, and the outgoing scan keeps its provenance", planned.scans.length === 2 && out?.body.context.phase === "pre_sign" && out?.body.context.origin === "planning" && inc?.body.context.phase === "pre_sign" && out?.body.payment.nonce === undefined, planned.scans.map((s) => s.body.context));
+  check("…so the real scanner defers replay (replay.pre_sign, no replay.no_nonce) and the outgoing verdict is allow", out?.verdict === "allow" && out.ids.includes("replay.pre_sign") && !out.ids.includes("replay.no_nonce"), out?.res.checks.filter((c: { verdict: string }) => c.verdict !== "allow"));
+  check("an allow-only TollWardenEnforcer approves it and guardSigner signs the nonce-bearing authorization", planned.error === null && planned.status === 200 && planned.wallet.nonces.length === 1 && planned.wallet.nonces[0] === minted, (planned.error as Error | null)?.message);
+  let second: unknown = null;
+  try { await planned.account.signTypedData(authorization("0x" + "2".repeat(64))); } catch (e) { second = e; }
+  check("…and that pre-sign approval admits no second authorization", second instanceof TollWardenEnforcementError && planned.wallet.nonces.length === 1);
+
+  // The request as both SDKs sent it before: the same body without phase.
+  const unphased = JSON.parse(JSON.stringify(out?.body ?? {}));
+  delete unphased.context?.phase;
+  const old = (handleScan("outgoing", unphased, cfg, new Store(null), e2eSigner, undefined) as { body: any }).body;
+  let oldRefusal: unknown = null;
+  try { new TollWardenEnforcer({ trustedKeyHex: e2ePinned }).approve(old, unphased.payment); } catch (e) { oldRefusal = e; }
+  check("control: the same request without phase flags replay.no_nonce and an allow-only enforcer refuses to approve it", old.verdict === "flag" && old.checks.some((c: { id: string }) => c.id === "replay.no_nonce") && oldRefusal instanceof TollWardenEnforcementError, { verdict: old.verdict, refusal: (oldRefusal as Error | null)?.message });
+
+  // Provenance is still required, by design. An untagged decision flags
+  // injection.unknown_origin, which allow-only refuses before anything is
+  // signed. The SDK READMEs say so next to the enforced-path snippet.
+  const untagged = await payThroughWrapper(() => undefined);
+  check("an untagged decision is still refused on the enforced path (injection.unknown_origin) and nothing is signed", untagged.error instanceof TollWardenEnforcementError && untagged.wallet.nonces.length === 0 && untagged.scans[0]?.verdict === "flag" && untagged.scans[0]?.ids.includes("injection.unknown_origin") === true && !untagged.scans[0]?.ids.includes("replay.no_nonce"), untagged.scans[0]?.res.checks.filter((c: { verdict: string }) => c.verdict !== "allow"));
 }
 
 console.log("\n— known-bad list —");
