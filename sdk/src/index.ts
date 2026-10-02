@@ -122,6 +122,10 @@ export interface ScanResponse {
    * payment's payee. Absent (undefined) when the server sent no evidence
    * record or verification is disabled. */
   pin_evidence?: PinEvidence | null;
+  /** Added by the SDK: the `context.origin` this client sent with the scan
+   * request (not part of the signed verdict). wrapFetchWithTollWarden reads
+   * it to give the offer scan the same declared origin as the payment. */
+  declared_origin?: PaymentOrigin;
   /** Present on a flag verdict when the key has human-in-the-loop approvals
    * configured: a human is being asked to decide. Poll with waitForApproval(). */
   approval?: PendingApproval;
@@ -536,11 +540,12 @@ export class TollWardenClient {
   private async scan(direction: "outgoing" | "incoming", payment: PaymentDetails, opts: ScanOptions = {}): Promise<ScanResponse> {
     await this.ensureApiKey().catch(() => undefined); // scanning without a key still works via x402-paid fetch
     await this.maybeRenew();
+    const context = this.buildContext(opts.context, opts.phase);
     const body = {
       agent_id: opts.agentId ?? this.agentId,
       payment,
       expected_price_usd: opts.expectedPriceUsd,
-      context: this.buildContext(opts.context, opts.phase),
+      context,
       policy: opts.policy,
     };
     const scan = await this.requestJson<ScanResponse>("POST", `/v1/scan/${direction}`, body);
@@ -549,6 +554,9 @@ export class TollWardenClient {
       scan.attestation_verified = true;
       if (evidence) scan.pin_evidence = evidence.pin;
     }
+    // Read from what was sent, so it is exact even when concurrent scans
+    // share this client's provenance slot.
+    scan.declared_origin = context.origin;
     // A consumed observation shouldn't leak provenance onto unrelated later scans.
     this.lastObservation = null;
     this.explicitOrigin = null;

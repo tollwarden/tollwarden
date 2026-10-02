@@ -397,10 +397,11 @@ class TollWardenClient:
         except TollWardenError:
             pass  # scanning without a key still works via an x402-paying transport
         self._maybe_renew()
+        ctx = self._build_context(context, phase)
         body: Dict[str, Any] = {
             "agent_id": agent_id or self.agent_id,
             "payment": payment,
-            "context": self._build_context(context, phase),
+            "context": ctx,
         }
         if expected_price_usd is not None:
             body["expected_price_usd"] = expected_price_usd
@@ -412,6 +413,11 @@ class TollWardenClient:
             scan["attestation_verified"] = True
             if evidence is not None:
                 scan["pin_evidence"] = evidence["pin"]
+        # Added by the SDK (not part of the signed verdict): the context.origin
+        # this scan sent. Read from what was sent, so it is exact even when
+        # threads share this client's provenance slot. The wrapper gives the
+        # offer scan the same declared origin as the payment.
+        scan["declared_origin"] = ctx.get("origin")
         # A consumed observation must not leak provenance onto unrelated later scans.
         self._observation = None
         self._explicit_origin = None

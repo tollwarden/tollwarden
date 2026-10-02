@@ -231,8 +231,18 @@ console.log("\n— provenance auto-tagging —");
   await client.scanOutgoing(basePayment);
   check("url-less observation tagged tool_result", seen.scans.at(-1)!.body.context.origin === "tool_result");
 
-  await client.scanOutgoing(basePayment, { context: { origin: "user_instruction" } });
+  const explicit = await client.scanOutgoing(basePayment, { context: { origin: "user_instruction" } });
   check("explicit context wins", seen.scans.at(-1)!.body.context.origin === "user_instruction");
+
+  // declared_origin (added by the SDK) is the origin the request actually
+  // sent, whichever way it was chosen. The wrapper's offer scan reads it.
+  client.observe("content read before paying");
+  const declaredObserved = await client.scanOutgoing(basePayment);
+  const declaredConsumed = await client.scanOutgoing(basePayment);
+  const declaredDefault = await new TollWardenClient({ baseUrl: BASE, defaultOrigin: "planning" }).scanIncoming(basePayment);
+  check("declared_origin records the origin each scan sent (observation, consumed, explicit, defaultOrigin)",
+    declaredObserved.declared_origin === "tool_result" && declaredConsumed.declared_origin === "unknown" && explicit.declared_origin === "user_instruction" && declaredDefault.declared_origin === "planning" && seen.scans.at(-1)!.body.context.origin === "planning",
+    [declaredObserved.declared_origin, declaredConsumed.declared_origin, explicit.declared_origin, declaredDefault.declared_origin]);
 
   // Phase is WHEN the scan runs, not where the decision came from, so the
   // option rides along with the automatic tagging instead of replacing it.
@@ -1123,12 +1133,33 @@ function signingPayingFetch(signer: TypedDataSigner): typeof fetch {
   const outgoingCtx = seen.scans[scansBefore]!.body.context;
   const offerCtx = seen.scans[scansBefore + 1]!.body.context;
   check("observation feeds the outgoing scan", outgoingCtx.origin === "fetched_content" && String(outgoingCtx.content).includes("organic"), outgoingCtx);
-  check("offer scan does not reuse the consumed observation", offerCtx.origin === "unknown", offerCtx.origin);
+  // The offer scan declares the same origin, but the content went out once.
+  // Before 2026-10-02 it declared "unknown", flagged unknown_origin on the
+  // real server, and a strict wrapper refused every payment.
+  check("offer scan declares the observation's origin without its content (exactly origin + phase)", offerCtx.origin === "fetched_content" && Object.keys(offerCtx).sort().join(",") === "origin,phase", offerCtx);
   // The offer has no nonce yet. Without pre_sign the real server flags
   // replay.no_nonce on every offer and an allow-only enforcer refuses every
   // payment; this mock allows regardless, so the server suite runs the same
   // wrapper through the real scanner.
   check("both scans send context.phase pre_sign, alongside the observation", outgoingCtx.phase === "pre_sign" && offerCtx.phase === "pre_sign", { outgoingCtx, offerCtx });
+}
+{
+  // A tagged decision under strict: the offer scan carries the same origin.
+  // The server suite runs this through the real scanner; the mock only
+  // records what was sent.
+  const tollwarden = new TollWardenClient({ baseUrl: BASE });
+  tollwarden.notePlanning();
+  const guardedFetch = wrapFetchWithTollWarden(payingFetch, tollwarden, { strict: true });
+  const scansBefore = seen.scans.length;
+  payments = 0;
+  await guardedFetch(`${MERCHANT}/paid`);
+  const [outCtx, offerCtx] = seen.scans.slice(scansBefore).map((s) => s.body.context);
+  check("notePlanning() under strict: both scans declare planning and the payment goes through", outCtx?.origin === "planning" && offerCtx?.origin === "planning" && Object.keys(offerCtx ?? {}).sort().join(",") === "origin,phase" && payments === 1, { outCtx, offerCtx, payments });
+
+  const untagged = new TollWardenClient({ baseUrl: BASE });
+  const before = seen.scans.length;
+  await wrapFetchWithTollWarden(payingFetch, untagged)(`${MERCHANT}/paid`);
+  check("an untagged decision's offer scan still declares unknown", seen.scans[before + 1]?.body.context.origin === "unknown", seen.scans[before + 1]?.body.context);
 }
 {
   // onScan telemetry + scanOffer:false single-scan mode.

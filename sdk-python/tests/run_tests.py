@@ -309,8 +309,20 @@ client.observe("tool output without url")
 client.scan_outgoing(base_payment)
 check("url-less observation tagged tool_result", seen["scans"][-1]["body"]["context"]["origin"] == "tool_result")
 
-client.scan_outgoing(base_payment, context={"origin": "user_instruction"})
+explicit = client.scan_outgoing(base_payment, context={"origin": "user_instruction"})
 check("explicit context wins", seen["scans"][-1]["body"]["context"]["origin"] == "user_instruction")
+
+# declared_origin (added by the SDK) is the origin the request actually sent,
+# whichever way it was chosen. The wrapper's offer scan reads it.
+client.observe("content read before paying")
+declared_observed = client.scan_outgoing(base_payment)
+declared_consumed = client.scan_outgoing(base_payment)
+declared_default = TollWardenClient(base_url=BASE, default_origin="planning").scan_incoming(base_payment)
+check("declared_origin records the origin each scan sent (observation, consumed, explicit, default_origin)",
+      declared_observed.get("declared_origin") == "tool_result" and declared_consumed.get("declared_origin") == "unknown"
+      and explicit.get("declared_origin") == "user_instruction" and declared_default.get("declared_origin") == "planning"
+      and seen["scans"][-1]["body"]["context"]["origin"] == "planning",
+      [declared_observed.get("declared_origin"), declared_consumed.get("declared_origin"), explicit.get("declared_origin"), declared_default.get("declared_origin")])
 
 # Phase is WHEN the scan runs, not where the decision came from, so the option
 # rides along with the automatic tagging instead of replacing it.
@@ -1195,13 +1207,37 @@ guarded("GET", "https://merchant.example/premium", {}, None)
 out_ctx = seen["scans"][scans_before]["body"]["context"]
 offer_ctx = seen["scans"][scans_before + 1]["body"]["context"]
 check("observation feeds the outgoing scan", out_ctx["origin"] == "fetched_content" and "organic" in out_ctx.get("content", ""))
-check("offer scan does not reuse the consumed observation", offer_ctx["origin"] == "unknown", offer_ctx["origin"])
+# The offer scan declares the same origin, but the content went out once.
+# Before 2026-10-02 it declared "unknown", flagged unknown_origin on the real
+# server, and a strict wrapper refused every payment.
+check("offer scan declares the observation's origin without its content (exactly origin + phase)",
+      offer_ctx["origin"] == "fetched_content" and sorted(offer_ctx) == ["origin", "phase"], offer_ctx)
 # The offer has no nonce yet. Without pre_sign the real server flags
 # replay.no_nonce on every offer and an allow-only enforcer refuses every
 # payment; this mock allows regardless, so the server suite runs the TS wrapper
 # through the real scanner.
 check("both scans send context.phase pre_sign, alongside the observation",
       out_ctx.get("phase") == "pre_sign" and offer_ctx.get("phase") == "pre_sign", (out_ctx, offer_ctx))
+
+# A tagged decision under strict: the offer scan carries the same origin. The
+# server suite runs the TS wrapper through the real scanner with this exact
+# context; the mock only records what was sent.
+tollwarden = TollWardenClient(base_url=BASE)
+tollwarden.note_planning()
+guarded = wrap_transport_with_tollwarden(paying_transport, tollwarden, base_transport=merchant_transport(), strict=True)
+scans_before = len(seen["scans"])
+payments["count"] = 0
+guarded("GET", "https://merchant.example/premium", {}, None)
+planned_ctxs = [s["body"]["context"] for s in seen["scans"][scans_before:]]
+check("note_planning() under strict: both scans declare planning and the payment goes through",
+      len(planned_ctxs) == 2 and planned_ctxs[0]["origin"] == "planning" and planned_ctxs[1]["origin"] == "planning"
+      and sorted(planned_ctxs[1]) == ["origin", "phase"] and payments["count"] == 1, (planned_ctxs, payments["count"]))
+
+untagged = TollWardenClient(base_url=BASE)
+scans_before = len(seen["scans"])
+wrap_transport_with_tollwarden(paying_transport, untagged, base_transport=merchant_transport())("GET", "https://merchant.example/premium", {}, None)
+untagged_offer = seen["scans"][scans_before + 1]["body"]["context"] if len(seen["scans"]) > scans_before + 1 else {}
+check("an untagged decision's offer scan still declares unknown", untagged_offer.get("origin") == "unknown", untagged_offer)
 
 # on_scan telemetry + scan_offer=False single-scan mode.
 tollwarden = TollWardenClient(base_url=BASE)

@@ -32,6 +32,15 @@
  * an offer has no nonce. Without it the server flags replay.no_nonce on every
  * offer, and an allow-only enforcer refuses every payment.
  *
+ * The offer scan declares the same `context.origin` the outgoing scan sent
+ * (its `declared_origin`), without the content. Both scans describe one
+ * decision, but the outgoing scan consumes the client's provenance, so the
+ * offer scan used to go out as "unknown" and flag injection.unknown_origin.
+ * `strict` then refused every payment, however the decision was tagged. The
+ * content is analysed once, on the outgoing scan. With `strict`, a decision
+ * prompted by observe()d content is still refused, because the offer scan
+ * flags injection.untrusted_origin and cannot re-check content it was not sent.
+ *
  * With `enforcer` set, the wrapper also registers each passing outgoing
  * verdict with a TollWardenEnforcer, so a signer wrapped by
  * `enforcer.guardSigner()` inside the paying fetch will sign exactly the
@@ -193,9 +202,16 @@ export function wrapFetchWithTollWarden(
     }
 
     // 2) The 402 offer itself, as an INCOMING payment request (URL risk,
-    // credential demands, asset verification, reputation).
+    // credential demands, asset verification, reputation). It declares the
+    // origin the outgoing scan sent, without the content (see the module
+    // comment).
     if (scanOffer) {
-      const incoming = await tollwarden.scanIncoming(offer, { expectedPriceUsd: expected, phase: "pre_sign" });
+      const declared = outgoing.declared_origin;
+      const incoming = await tollwarden.scanIncoming(offer, {
+        expectedPriceUsd: expected,
+        phase: "pre_sign",
+        ...(declared !== undefined ? { context: { origin: declared } } : {}),
+      });
       opts.onScan?.("incoming", incoming);
       if (incoming.verdict === "block" || (opts.strict && incoming.verdict === "flag")) {
         throw new TollWardenBlockedError(incoming);

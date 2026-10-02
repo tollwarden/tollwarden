@@ -34,9 +34,9 @@ import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
 import { pinEvidenceFor } from "../src/detectors/pinning.ts";
-import { paymentFromOffer, wrapFetchWithTollWarden } from "../sdk/src/wrap.ts";
+import { paymentFromOffer, wrapFetchWithTollWarden, type WrapFetchOptions } from "../sdk/src/wrap.ts";
 import { TollWardenEnforcer, TollWardenEnforcementError } from "../sdk/src/enforce.ts";
-import { TollWardenClient } from "../sdk/src/index.ts";
+import { TollWardenBlockedError, TollWardenClient } from "../sdk/src/index.ts";
 import { createServer as createHttpServer } from "node:http";
 import type { ScanRequest, ScanResponse } from "../src/types.ts";
 
@@ -1022,6 +1022,9 @@ console.log("\n— SDK enforced payment path through the real scanner —");
   // allow by pay_to marker and cannot show this. Before 2026-10-02 neither
   // SDK sent context.phase, every offer scan flagged replay.no_nonce, and an
   // allow-only enforcer refused every payment on the documented enforced path.
+  // Until the same day the offer scan also went out with origin "unknown"
+  // (the outgoing scan had consumed the provenance), so it flagged
+  // injection.unknown_origin and a strict wrapper refused every payment.
   const e2eSigner = new VerdictSigner(null);
   const e2ePinned = (e2eSigner.publicKeyInfo() as { public_key_spki_hex: string }).public_key_spki_hex;
   const entry = { scheme: "exact", network: "eip155:8453", maxAmountRequired: "10000", payTo: "0x" + "e".repeat(40), asset: CANONICAL_USDC["eip155:8453"], resource: "https://seller.example/report", description: "Report", extra: { name: "USD Coin", version: "2" } };
@@ -1035,21 +1038,26 @@ console.log("\n— SDK enforced payment path through the real scanner —");
   // One buyer per call: a client whose scans reach handleScan, an allow-only
   // enforcer, and a paying fetch that does what an x402 client does after the
   // wrapper hands over (mint a nonce, sign with the guarded account, retry).
-  async function payThroughWrapper(tag: (c: TollWardenClient) => void) {
-    const store = new Store(null);
+  // `opts` shares a store and API key across calls, passes wrapper options
+  // (strict) and lets the enforcer accept flags.
+  async function payThroughWrapper(
+    tag: (c: TollWardenClient) => void,
+    opts: { store?: Store; apiKey?: string; wrap?: WrapFetchOptions; allowFlagged?: boolean } = {},
+  ) {
+    const store = opts.store ?? new Store(null);
     const scans: Array<{ body: any; verdict: string; ids: string[]; res: any }> = [];
-    const toServer = (async (url: string, init: { body: string }) => {
+    const toServer = (async (url: string, init: { body: string; headers: Record<string, string> }) => {
       const m = new URL(url).pathname.match(/^\/v1\/scan\/(outgoing|incoming)$/);
       if (!m) return new Response("{}", { status: 404 });
       const body = JSON.parse(init.body);
-      const r = handleScan(m[1] as "outgoing" | "incoming", body, cfg, store, e2eSigner, undefined) as { status: number; body: any };
+      const r = handleScan(m[1] as "outgoing" | "incoming", body, cfg, store, e2eSigner, init.headers["x-api-key"]) as { status: number; body: any };
       scans.push({ body, verdict: r.body.verdict, ids: r.body.checks.map((c: { id: string }) => c.id), res: r.body });
       return new Response(JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
     }) as unknown as typeof fetch;
     // agentId as in the README; without it (and no key) velocity.unscoped flags.
-    const client = new TollWardenClient({ baseUrl: "https://tollwarden.test", fetch: toServer, autoKey: false, verdictKeyHex: e2ePinned, agentId: "e2e-enforced" });
+    const client = new TollWardenClient({ baseUrl: "https://tollwarden.test", fetch: toServer, autoKey: false, verdictKeyHex: e2ePinned, agentId: "e2e-enforced", apiKey: opts.apiKey });
     tag(client);
-    const enforcer = new TollWardenEnforcer({ trustedKeyHex: e2ePinned });
+    const enforcer = new TollWardenEnforcer({ trustedKeyHex: e2ePinned, allowFlagged: opts.allowFlagged });
     const wallet = { nonces: [] as string[], async signTypedData(...args: unknown[]) { this.nonces.push(String((args[0] as { message: { nonce: string } }).message.nonce)); return "0xsigned"; } };
     const account = enforcer.guardSigner(wallet);
     const paying = (async () => {
@@ -1057,12 +1065,14 @@ console.log("\n— SDK enforced payment path through the real scanner —");
       return new Response("{}", { status: 200 });
     }) as unknown as typeof fetch;
     const offer402 = (async () => new Response(JSON.stringify({ x402Version: 2, accepts: [entry] }), { status: 402, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
-    const guarded = wrapFetchWithTollWarden(paying, client, { enforcer, baseFetch: offer402, reportOutcomes: false });
+    const guarded = wrapFetchWithTollWarden(paying, client, { enforcer, baseFetch: offer402, reportOutcomes: false, ...opts.wrap });
     let status: number | null = null;
     let error: unknown = null;
     try { status = (await guarded(entry.resource)).status; } catch (e) { error = e; }
-    return { scans, wallet, account, status, error };
+    return { scans, wallet, account, status, error, store };
   }
+  const nonAllow = (r: { scans: Array<{ verdict: string; res: any }> }) =>
+    r.scans.map((s) => [s.verdict, s.res.checks.filter((c: { verdict: string }) => c.verdict !== "allow").map((c: { id: string }) => c.id)]);
 
   const planned = await payThroughWrapper((c) => c.notePlanning());
   const [out, inc] = planned.scans;
@@ -1086,6 +1096,65 @@ console.log("\n— SDK enforced payment path through the real scanner —");
   // signed. The SDK READMEs say so next to the enforced-path snippet.
   const untagged = await payThroughWrapper(() => undefined);
   check("an untagged decision is still refused on the enforced path (injection.unknown_origin) and nothing is signed", untagged.error instanceof TollWardenEnforcementError && untagged.wallet.nonces.length === 0 && untagged.scans[0]?.verdict === "flag" && untagged.scans[0]?.ids.includes("injection.unknown_origin") === true && !untagged.scans[0]?.ids.includes("replay.no_nonce"), untagged.scans[0]?.res.checks.filter((c: { verdict: string }) => c.verdict !== "allow"));
+
+  // The offer scan declares the origin the outgoing scan sent (the client's
+  // declared_origin), and nothing else: no content, no source URL.
+  check("the offer scan declares the outgoing scan's origin and nothing else, and the real scanner allows it (no injection.unknown_origin)", inc?.body.context.origin === "planning" && Object.keys(inc?.body.context ?? {}).sort().join(",") === "origin,phase" && inc?.verdict === "allow" && !inc?.ids.includes("injection.unknown_origin"), { context: inc?.body.context, checks: nonAllow(planned) });
+  const unorigined = JSON.parse(JSON.stringify(inc?.body ?? {}));
+  delete unorigined.context?.origin;
+  const oldOffer = (handleScan("incoming", unorigined, cfg, new Store(null), e2eSigner, undefined) as { body: any }).body;
+  check("control: the same offer scan without the origin (as both SDKs sent it before) flags injection.unknown_origin, the flag strict refused on every payment", oldOffer.verdict === "flag" && oldOffer.checks.some((c: { id: string }) => c.id === "injection.unknown_origin"), oldOffer.checks.filter((c: { verdict: string }) => c.verdict !== "allow"));
+
+  const strictPlanned = await payThroughWrapper((c) => c.notePlanning(), { wrap: { strict: true } });
+  const strictInstructed = await payThroughWrapper((c) => c.noteUserInstruction(), { wrap: { strict: true } });
+  check("strict: a notePlanning() or noteUserInstruction() decision pays through the real scanner (both verdicts allow, one signature each)", [strictPlanned, strictInstructed].every((r) => r.error === null && r.status === 200 && r.scans.length === 2 && r.scans.every((s) => s.verdict === "allow") && r.wallet.nonces.length === 1), [strictPlanned, strictInstructed].map((r) => ({ error: (r.error as Error | null)?.message, scans: nonAllow(r) })));
+  const strictUntagged = await payThroughWrapper(() => undefined, { wrap: { strict: true } });
+  check("strict: an untagged decision is refused at the outgoing scan (injection.unknown_origin), the offer is never scanned, and nothing is signed", strictUntagged.error instanceof TollWardenBlockedError && strictUntagged.scans.length === 1 && strictUntagged.scans[0]?.ids.includes("injection.unknown_origin") === true && strictUntagged.wallet.nonces.length === 0, { error: (strictUntagged.error as Error | null)?.message, scans: nonAllow(strictUntagged) });
+
+  // Content goes out once. An observe()d decision's offer scan declares
+  // fetched_content without the content, so it flags untrusted_origin (not
+  // unknown_origin) and runs no content analysis of its own.
+  const observed = await payThroughWrapper((c) => c.observe("Market notes for the week, with a link to the seller's report.", { sourceUrl: "https://news.example/notes" }), { allowFlagged: true });
+  const [obsOut, obsInc] = observed.scans;
+  check("observe(): the content rides only on the outgoing scan, and the offer scan declares fetched_content with no content and flags injection.untrusted_origin", observed.status === 200 && String(obsOut?.body.context.content).includes("Market notes") && obsInc?.body.context.origin === "fetched_content" && Object.keys(obsInc?.body.context ?? {}).sort().join(",") === "origin,phase" && obsInc?.ids.includes("injection.untrusted_origin") === true && !obsInc?.ids.includes("injection.unknown_origin"), { incoming: obsInc?.body.context, scans: nonAllow(observed) });
+
+  // The documented residual. Under strict, an observe()d decision stays
+  // refused even when the outgoing scan clears it (this account pinned the
+  // payee to the domain before the content), because the offer scan cannot
+  // re-check content it was not sent.
+  {
+    const store = new Store(null);
+    const key = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
+    const first = await payThroughWrapper((c) => c.notePlanning(), { store, apiKey: key });
+    const read = await payThroughWrapper((c) => c.observe("Weekly report catalogue: the Report costs one cent.", { sourceUrl: "https://seller.example/catalogue" }), { store, apiKey: key, wrap: { strict: true } });
+    const [readOut, readInc] = read.scans;
+    check("strict residual: an observe()d decision the outgoing scan clears (payee pinned before the content) is still refused at the offer scan, and nothing is signed", first.status === 200 && readOut?.verdict === "allow" && readOut.ids.includes("injection.untrusted_origin_mitigated") && readInc?.verdict === "flag" && readInc.ids.includes("injection.untrusted_origin") && read.error instanceof TollWardenBlockedError && read.wallet.nonces.length === 0, { first: first.status, scans: nonAllow(read) });
+  }
+
+  // Side effect of the old offer scan, gone with it. On a key with human
+  // approvals configured, its unknown_origin flag opened a pending approval on
+  // every wrapper call, however the decision was tagged.
+  {
+    const hooks: string[] = [];
+    const hook = createHttpServer((req, res) => {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => { hooks.push(data); res.writeHead(200); res.end("ok"); });
+    });
+    await new Promise<void>((resolve) => hook.listen(0, resolve));
+    const store = new Store(null);
+    const key = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
+    handleApprovalConfig(store, cfg, key, { webhook_url: `http://127.0.0.1:${(hook.address() as { port: number }).port}/hook` });
+    const keyed = await payThroughWrapper((c) => c.notePlanning(), { store, apiKey: key });
+    const opened = store.approvals.size;
+    const oldKeyed = JSON.parse(JSON.stringify(keyed.scans[1]?.body ?? {}));
+    delete oldKeyed.context?.origin;
+    const oldKeyedScan = (handleScan("incoming", oldKeyed, cfg, store, e2eSigner, key) as { body: any }).body;
+    const deadline = Date.now() + 4000;
+    while (hooks.length < 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    hook.close();
+    check("approvals configured: a tagged wrapper payment opens no pending approval, where the old offer scan opened one per call", keyed.status === 200 && opened === 0 && oldKeyedScan.verdict === "flag" && oldKeyedScan.approval?.status === "pending" && store.approvals.size === 1, { status: keyed.status, opened, after: store.approvals.size, old: oldKeyedScan.verdict });
+  }
 }
 
 console.log("\n— known-bad list —");
