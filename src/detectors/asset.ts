@@ -23,7 +23,8 @@ const USDC_DECIMALS = 6;
  * not one TollWarden can vouch for. Value checks resolve decimals from HERE,
  * never from the request: `asset_decimals` is client-supplied, and declaring
  * 18 for a 6-decimal token shrinks a $10 transfer to $0.00001 in every
- * USD-denominated cap (audit 2026-09-19).
+ * USD-denominated cap (audit 2026-09-19). For assets this returns null on,
+ * see resolveValue in overpayment.ts (a declaration may only raise the value).
  */
 export function knownAssetDecimals(network: string | undefined, asset: string | undefined): number | null {
   if (!network || !asset) return null;

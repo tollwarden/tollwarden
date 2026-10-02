@@ -123,7 +123,7 @@ export function runScan(
     }),
   );
   // A client-declared asset_decimals the server refused to use is made
-  // visible (the value above was already computed from server-known decimals).
+  // visible (the value above was already computed without it).
   const valueProvenance = checkValueProvenance(payment);
   if (valueProvenance) checks.push(valueProvenance);
   checks.push(...checkInjection(payment, req.context, { payeeEstablishedBefore }));

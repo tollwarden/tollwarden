@@ -39,7 +39,7 @@ const PaymentDetails = {
     asset: { type: "string", description: "Token contract address (e.g. USDC)" },
     amount: { type: "string", description: 'Amount in atomic token units, e.g. "10000" = $0.01 USDC' },
     amount_usd: { type: "number", description: "Alternative when no atomic amount is available: decimal USD value (self-reported; ignored and flagged when it disagrees with `amount`)" },
-    asset_decimals: { type: "integer", description: "Informational. Decimals are resolved server-side from `asset` (canonical USDC = 6); a declared value that disagrees is ignored and flagged. Honored only for assets the server does not know." },
+    asset_decimals: { type: "integer", description: "Informational. Decimals are resolved server-side from `asset` (canonical USDC = 6); a declared value that disagrees is ignored and flagged. For an asset the server does not know, a value below 6 is honored (it only raises the payment's value) and a value above 6 is ignored and flagged, so a declaration can never make a payment look smaller than the 6-decimal reading." },
     pay_to: { type: "string", description: "Recipient address" },
     payer: { type: "string", description: "Paying agent's address (optional; scopes replay tracking, and velocity/history for anonymous scans)" },
     resource_url: { type: "string", description: "The resource being purchased" },

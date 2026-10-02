@@ -27,7 +27,8 @@
  * Zero dependencies. Parse-only, no network, no state.
  */
 import type { CheckResult, PaymentDetails, ScanContext } from "../types.ts";
-import { resolveUsd } from "./overpayment.ts";
+import { knownAssetDecimals } from "./asset.ts";
+import { DEFAULT_DECIMALS, parseDeclaredDecimals, resolveValue } from "./overpayment.ts";
 
 /** Cap on offer parsing work — offers are small; a huge blob is not an offer. */
 const MAX_OFFER_CHARS = 64_000;
@@ -42,6 +43,8 @@ interface OfferTerms {
   network?: string;
   asset?: string;
   usd?: number;
+  /** Decimals `usd` was computed with, when the offer priced in atomic units. */
+  usd_decimals?: number;
   /** How many alternative legs the offer carried, when it was a multi-rail list. */
   legs?: number;
 }
@@ -52,37 +55,55 @@ function str(v: unknown): string | undefined {
 
 /**
  * Money in x402 offers appears as an atomic string (`maxAmountRequired`) or as
- * a human price (`price: 0.005`, `price: "$0.005"`). Atomic needs the decimals
- * that accompany it; a bare human number is already USD.
+ * a human price (`price: 0.005`, `price: "$0.005"`). Atomic needs decimals; a
+ * bare human number is already USD.
+ *
+ * Decimals for the ADVERTISED side mirror resolveValue's rule for the payment
+ * side. Server-known decimals win (canonical USDC = 6). Otherwise the offer's
+ * own declaration (usually the seller's `extra.decimals`) is honored only when
+ * it makes the advertised price SMALLER than the 6-decimal reading, i.e.
+ * max(declared, 6). The payment side may only read LARGER, so a declaration on
+ * either side can widen the measured drift but never narrow it, and for one
+ * token the measured payment/offer ratio is never below the ratio of the
+ * atomic amounts.
  */
-function usdFromOffer(o: Record<string, unknown>): number | undefined {
-  const decimals = Number(
-    o.asset_decimals ?? o.assetDecimals ?? (o.extra as Record<string, unknown> | undefined)?.decimals ?? 6,
-  );
+function usdFromOffer(
+  o: Record<string, unknown>,
+  network: string | undefined,
+  asset: string | undefined,
+): { usd: number; decimals?: number } | undefined {
   const atomicRaw = o.maxAmountRequired ?? o.amountRequired ?? o.amount;
   if (atomicRaw !== undefined && atomicRaw !== null) {
     const atomic = Number(atomicRaw);
-    if (Number.isFinite(atomic) && Number.isFinite(decimals)) {
+    const declared = parseDeclaredDecimals(
+      o.asset_decimals ?? o.assetDecimals ?? (o.extra as Record<string, unknown> | undefined)?.decimals,
+    );
+    const decimals = knownAssetDecimals(network, asset) ?? Math.max(declared ?? DEFAULT_DECIMALS, DEFAULT_DECIMALS);
+    if (Number.isFinite(atomic)) {
       const usd = atomic / 10 ** decimals;
-      if (Number.isFinite(usd)) return usd;
+      if (Number.isFinite(usd)) return { usd, decimals };
     }
   }
   const priceRaw = o.price ?? o.price_usd ?? o.priceUsd ?? o.amount_usd ?? o.amountUsd;
-  if (typeof priceRaw === "number" && Number.isFinite(priceRaw)) return priceRaw;
+  if (typeof priceRaw === "number" && Number.isFinite(priceRaw)) return { usd: priceRaw };
   if (typeof priceRaw === "string") {
     const n = Number(priceRaw.replace(/[$,\s]/g, ""));
-    if (Number.isFinite(n)) return n;
+    if (Number.isFinite(n)) return { usd: n };
   }
   return undefined;
 }
 
 function termsOf(o: Record<string, unknown>): OfferTerms {
+  const network = str(o.network ?? o.chain ?? o.chainId ?? o.chain_id);
+  const asset = str(o.asset ?? o.token ?? o.currency);
+  const value = usdFromOffer(o, network, asset);
   return {
     pay_to: str(o.payTo ?? o.pay_to ?? o.payee ?? o.recipient)?.toLowerCase(),
     scheme: str(o.scheme)?.toLowerCase(),
-    network: str(o.network ?? o.chain ?? o.chainId ?? o.chain_id)?.toLowerCase(),
-    asset: str(o.asset ?? o.token ?? o.currency)?.toLowerCase(),
-    usd: usdFromOffer(o),
+    network: network?.toLowerCase(),
+    asset: asset?.toLowerCase(),
+    usd: value?.usd,
+    usd_decimals: value?.decimals,
   };
 }
 
@@ -244,7 +265,8 @@ export function checkOfferDrift(
   // 5. Price drift. Direction matters: paying MORE than advertised is the
   //    bait-and-switch; paying less is usually a stale quote and merely gets
   //    rejected by the seller.
-  const paymentUsd = resolveUsd(payment);
+  const paymentValue = resolveValue(payment);
+  const paymentUsd = paymentValue.usd;
   if (terms.usd !== undefined && terms.usd > 0 && paymentUsd !== null && paymentUsd > 0) {
     const ratio = paymentUsd / terms.usd;
     if (ratio >= PRICE_FLAG_RATIO || ratio <= 1 / PRICE_FLAG_RATIO) {
@@ -256,7 +278,13 @@ export function checkOfferDrift(
         verdict: "flag",
         severity: up && ratio >= PRICE_HIGH_RATIO ? "high" : "medium",
         reason: `This payment is ${factor.toFixed(1)}× ${up ? "MORE" : "less"} than the offer it came from: offer $${terms.usd.toFixed(6)}, payment $${paymentUsd.toFixed(6)}.${up ? " A live 402 demanding far more than its catalogue listing is a price trap — the live offer is what you pay, so price the live 402, not the listing." : " A payment below the advertised price is normally a stale quote and will simply be refused."}`,
-        details: { offer_usd: terms.usd, payment_usd: paymentUsd, ratio },
+        details: {
+          offer_usd: terms.usd,
+          payment_usd: paymentUsd,
+          ratio,
+          offer_decimals: terms.usd_decimals ?? null,
+          payment_decimals: paymentValue.decimals ?? null,
+        },
       });
     }
   }

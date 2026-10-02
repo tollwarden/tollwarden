@@ -4,7 +4,7 @@
 
 [![x402](https://img.shields.io/badge/x402-v2-blue)](https://github.com/x402-foundation/x402)
 [![network](https://img.shields.io/badge/settles%20on-Base%20(USDC)-0052FF)](https://docs.cdp.coinbase.com/x402/quickstart-for-sellers)
-[![tests](https://img.shields.io/badge/tests-579%2F579-brightgreen)](test/run-tests.ts)
+[![tests](https://img.shields.io/badge/tests-593%2F593-brightgreen)](test/run-tests.ts)
 [![npm](https://img.shields.io/npm/v/@tollwarden/client?label=sdk)](https://www.npmjs.com/package/@tollwarden/client)
 [![license](https://img.shields.io/badge/license-BUSL--1.1-lightgrey)](LICENSE)
 
@@ -239,7 +239,7 @@ npm install
 
 npm run dev            # local dev server — payments off
 npm run demo:replay    # replay-attack demo: fresh nonce ALLOW → reused nonce BLOCK
-npm test               # 579-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
+npm test               # 593-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
 npm run eval           # detection eval corpus: attack payloads + benign FP guards, graded via real scans (gates CI + publish)
 ```
 
@@ -311,7 +311,7 @@ Published for transparency — these are the thresholds your scans are judged ag
 | Asset check | non-canonical USDC on the declared network → block |
 | Merchant pinning | TOFU per resource domain, per account: rotation on a domain your account pinned → block; rotation against another caller's unverified observation → flag; against a CDP-verified pin → block for anyone. Pin age + named corroboration sources published as signed attestation evidence |
 | Address poisoning | ≥4 shared hex chars on both ends of a known address (but not equal) → block when the known address is yours (paid before / your pin) or CDP-verified, flag when it is another caller's unverified pin; same lookalike planted in just-read content → block (untrusted origin, trusted reference) or flag |
-| Payment value | resolved from the atomic `amount` and **server-known** token decimals (canonical USDC = 6). A client-declared `asset_decimals` that disagrees is ignored and flagged; `amount_usd` is used only when no atomic amount is given, and is flagged when it disagrees with one |
+| Payment value | resolved from the atomic `amount` and **server-known** token decimals (canonical USDC = 6). A client-declared `asset_decimals` that disagrees is ignored and flagged. For an asset the server cannot verify (including any network it has no USDC entry for), a declaration may raise the value but never lower it below the 6-decimal reading, so a seller's `extra.decimals` cannot shrink a payment under any cap; a genuine 18-decimal token there is over-valued and usually refused at the ceiling. `amount_usd` is used only when no atomic amount is given, and is flagged when it disagrees with one |
 | ScoutScore signal | opt-in (`SCOUTSCORE=on`); LOW/VERY_LOW-rated domains → flag (never block); cached 24h |
 | Verdict signing | Ed25519, always on, 5-minute attestation expiry |
 
@@ -340,10 +340,10 @@ src/
   commitment.ts   Payment hashing (attestation binding + audit digest)
 mcp/server.ts     MCP server (12 tools — npx tollwarden)
 examples/         replay-demo.ts — reused-nonce attack blocked end-to-end
-test/             579-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
+test/             593-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
 eval/             detection eval corpus + runner (attacks must catch, benign must pass — npm run eval, gates CI)
-sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 127 tests)
-sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 131 tests)
+sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 130 tests)
+sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 135 tests)
 ```
 
 Design notes: verdicts aggregate worst-first (any block ⇒ block); `risk_score` is severity-based with compounding for multiple independent findings; the detection core has **zero runtime dependencies**, so the full suite runs with `node --experimental-strip-types` and no install.

@@ -55,8 +55,30 @@ from . import (
 __all__ = ["wrap_transport_with_tollwarden", "payment_from_offer"]
 
 
+def _declared_decimals(v: Any) -> Optional[int]:
+    """The seller's ``extra.decimals`` as an integer in 0..36, else None.
+
+    Same accept/drop set as the TS paymentFromOffer. JSON ``18.0`` is a float
+    here but a plain 18 in JavaScript, so integral floats count; bool is an
+    int subclass in Python and does not.
+    """
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    if isinstance(v, int) and 0 <= v <= 36:
+        return v
+    return None
+
+
 def payment_from_offer(entry: Dict[str, Any], request_url: str) -> Dict[str, Any]:
-    """Defensive mapping from an x402 402 body's requirements entry to payment fields."""
+    """Defensive mapping from an x402 402 body's requirements entry to payment fields.
+
+    ``extra.decimals`` is the SELLER's claim about its own token. It is
+    forwarded only as an integer in 0..36 (the range the server reads) so the
+    server can flag a declaration it refuses; the server never lets it shrink
+    a payment under a USD cap.
+    """
 
     def s(v: Any) -> Optional[str]:
         if isinstance(v, str) and v:
@@ -75,8 +97,9 @@ def payment_from_offer(entry: Dict[str, Any], request_url: str) -> Dict[str, Any
         "resource_url": s(entry.get("resource")) or request_url,
         "description": s(entry.get("description")),
     }
-    if isinstance(extra.get("decimals"), int):
-        payment["asset_decimals"] = extra["decimals"]
+    decimals = _declared_decimals(extra.get("decimals"))
+    if decimals is not None:
+        payment["asset_decimals"] = decimals
     return {k: v for k, v in payment.items() if v is not None}
 
 

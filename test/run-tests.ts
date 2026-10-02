@@ -33,6 +33,7 @@ import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
 import { pinEvidenceFor } from "../src/detectors/pinning.ts";
+import { paymentFromOffer } from "../sdk/src/wrap.ts";
 import { createServer as createHttpServer } from "node:http";
 import type { ScanRequest, ScanResponse } from "../src/types.ts";
 
@@ -213,14 +214,96 @@ console.log("\n— payment value resolution: decimals come from the server, not 
   });
   check("matching declaration on canonical USDC is silent", !hasCheck(honest, "value.decimals_ignored") && !hasCheck(honest, "value.usd_mismatch"), honest.checks.filter((c) => c.verdict !== "allow"));
 
-  // An asset the server does not know: the declaration is honored (that asset
-  // already fails the canonical-USDC check unless the operator opted in).
-  const unknownAsset = scan("outgoing", {
-    payment: { ...basePayment, network: "eip155:999", asset: "0x" + "d".repeat(40), amount: "5000000000000000000", asset_decimals: 18, nonce: "0xdec4" },
-    expected_price_usd: 5,
+  // An asset the server does not know (audit 2026-10-02): the declaration may
+  // RAISE the value but never lower it below the 6-decimal reading. A seller
+  // on an unlisted network used to declare 18 for a 6-decimal token and shrink
+  // a $20 payment to $0.00000000002 under every USD cap.
+  const unlisted = { network: "eip155:999", asset: "0x" + "d".repeat(40) };
+  const declared18 = scan("outgoing", {
+    payment: { ...basePayment, ...unlisted, amount: "20000000", asset_decimals: 18, nonce: "0xdec4" },
+    expected_price_usd: 0.01,
     context: { origin: "planning" },
   });
-  check("unknown asset honors the declared decimals ($5 at 18 decimals reads as $5, not $5e12)", hasCheck(unknownAsset, "overpay.clean") && !hasCheck(unknownAsset, "value.decimals_ignored"), unknownAsset.checks.filter((c) => c.verdict !== "allow"));
+  check("unknown asset, declared 18 on a $20 payment: valued at 6 decimals, ceiling enforced", declared18.verdict === "block" && hasCheck(declared18, "overpay.absolute_cap"), declared18.checks.filter((c) => c.verdict !== "allow"));
+  const refused = declared18.checks.find((c) => c.id === "value.decimals_ignored");
+  check("…and the refused declaration is a medium flag naming both values", refused?.verdict === "flag" && refused.severity === "medium" && refused.details?.declared_decimals === 18 && refused.details?.used_decimals === 6 && refused.details?.value_source === "atomic_declared", refused);
+
+  // Under the ceiling, the other USD caps see the real size too.
+  const capStore = new Store(null);
+  const first = scan("outgoing", {
+    payment: { ...basePayment, ...unlisted, amount: "3000000", asset_decimals: 18, nonce: "0xdec6" },
+    context: { origin: "planning" },
+  }, capStore);
+  check("declared 18 does not slip a $3 first payment under the first-contact cap", hasCheck(first, "velocity.first_contact_size"), first.checks.filter((c) => c.verdict !== "allow"));
+  const second = scan("outgoing", {
+    payment: { ...basePayment, ...unlisted, amount: "3000000", asset_decimals: 18, nonce: "0xdec7" },
+    context: { origin: "planning" },
+  }, capStore);
+  check("declared 18 does not slip $6 in an hour under the $5 hourly cap", second.verdict === "block" && hasCheck(second, "velocity.spend_cap"), second.checks.filter((c) => c.verdict !== "allow"));
+  const deepGate = scan("outgoing", {
+    payment: { ...basePayment, ...unlisted, amount: "500000", asset_decimals: 18, nonce: "0xdec8" },
+    context: { origin: "planning", content: "Plan: buy the weather report for the trip." },
+  });
+  check("declared 18 does not push a $0.50 payment under the micro-bypass deep-tier gate", !hasCheck(deepGate, "tier.deep_bypassed"), deepGate.checks.map((c) => c.id));
+
+  // Fewer decimals than 6 only makes the payment look larger, so it is honored.
+  const declared2 = scan("outgoing", {
+    payment: { ...basePayment, ...unlisted, amount: "2000", asset_decimals: 2, nonce: "0xdec9" },
+    expected_price_usd: 0.01,
+    context: { origin: "planning" },
+  });
+  check("unknown asset, declared 2: honored ($20, ceiling enforced) and not flagged as refused", declared2.verdict === "block" && hasCheck(declared2, "overpay.absolute_cap") && !hasCheck(declared2, "value.decimals_ignored"), declared2.checks.filter((c) => c.verdict !== "allow"));
+
+  const undeclared = scan("outgoing", {
+    payment: { ...basePayment, ...unlisted, amount: "10000", asset_decimals: undefined, nonce: "0xdeca" },
+    expected_price_usd: 0.01,
+    context: { origin: "planning" },
+  });
+  check("unknown asset with no declaration reads at 6 decimals, silently", hasCheck(undeclared, "overpay.clean") && !hasCheck(undeclared, "value.decimals_ignored"), undeclared.checks.filter((c) => c.verdict !== "allow"));
+
+  // x402 v1 network names are not in CANONICAL_USDC, so real Base USDC under
+  // "base" is an unknown asset to the server. The clamp covers it.
+  const v1Base = scan("outgoing", {
+    payment: { ...basePayment, network: "base", asset: usdc, amount: "20000000", asset_decimals: 18, nonce: "0xdecb" },
+    expected_price_usd: 0.01,
+    context: { origin: "planning" },
+  });
+  check("v1 network name \"base\" + declared 18: still valued at 6 decimals, ceiling enforced", v1Base.verdict === "block" && hasCheck(v1Base, "overpay.absolute_cap") && hasCheck(v1Base, "value.decimals_ignored"), v1Base.checks.filter((c) => c.verdict !== "allow"));
+
+  // The accepted cost, stated as a test: a GENUINE 18-decimal token the
+  // server cannot verify is over-valued, so 0.01 of it reads as $10^10 and
+  // the ceiling refuses it. Over-valuation is the chosen failure direction.
+  const genuine18 = scan("outgoing", {
+    payment: { ...basePayment, ...unlisted, amount: "10000000000000000", asset_decimals: 18, nonce: "0xdecc" },
+    expected_price_usd: 0.01,
+    context: { origin: "planning" },
+  });
+  check("genuine 18-decimal token on an unlisted network fails toward over-valuation (blocked at the ceiling, with the reason flagged)", genuine18.verdict === "block" && hasCheck(genuine18, "overpay.absolute_cap") && hasCheck(genuine18, "value.decimals_ignored"), genuine18.checks.filter((c) => c.verdict !== "allow"));
+
+  // The SDK path: paymentFromOffer copies the seller's extra.decimals into
+  // asset_decimals. The Python SDK's payment_from_offer produces the same
+  // dict from the same entry (asserted in sdk-python/tests/run_tests.py).
+  const seller402Entry = {
+    scheme: "exact",
+    network: "eip155:999",
+    maxAmountRequired: "20000000",
+    payTo: "0x" + "e".repeat(40),
+    asset: "0x" + "d".repeat(40),
+    resource: "https://seller.example/report",
+    description: "Report",
+    extra: { decimals: 18 },
+  };
+  const mapped = paymentFromOffer(seller402Entry, "https://seller.example/report");
+  const sameAsPython = {
+    scheme: "exact", network: "eip155:999", asset: "0x" + "d".repeat(40), amount: "20000000",
+    pay_to: "0x" + "e".repeat(40), resource_url: "https://seller.example/report", description: "Report", asset_decimals: 18,
+  };
+  const definedFields = Object.fromEntries(Object.entries(mapped).filter(([, v]) => v !== undefined));
+  check("SDK paymentFromOffer forwards the seller's declared 18 (same dict as Python's payment_from_offer)", JSON.stringify(Object.entries(definedFields).sort()) === JSON.stringify(Object.entries(sameAsPython).sort()), mapped);
+  const viaSdk = scan("outgoing", { payment: mapped, context: { origin: "unknown" } });
+  check("seller-declared 18 through paymentFromOffer: the $20 payment still blocks at the ceiling", viaSdk.verdict === "block" && hasCheck(viaSdk, "overpay.absolute_cap") && viaSdk.checks.find((c) => c.id === "value.decimals_ignored")?.details?.used_decimals === 6, viaSdk.checks.filter((c) => c.verdict !== "allow"));
+  const viaSdkOffer = scan("incoming", { payment: mapped, context: { origin: "unknown" } });
+  check("…and the wrapper's incoming offer scan blocks it too", viaSdkOffer.verdict === "block" && hasCheck(viaSdkOffer, "overpay.absolute_cap"), viaSdkOffer.checks.filter((c) => c.verdict !== "allow"));
 
   // Atomic amount and a disagreeing self-reported USD figure: the atomic
   // amount governs and the self-report is flagged.
@@ -1600,6 +1683,31 @@ console.log("\n— offer drift: payment vs the offer it came from (N2/N3) —");
     context: { origin: "planning", offer: offer({ scheme: "exact", network: "eip155:8453", payTo: basePayment.pay_to, price: "$0.005" }) },
   });
   check("human-priced listing drift is detected", hasCheck(humanPriced, "drift.price"), humanPriced.checks.filter((c) => c.verdict !== "allow"));
+
+  // Offer-side decimals (audit 2026-10-02). On an asset the server cannot
+  // verify, the offer's own declaration may make the advertised price look
+  // smaller (wider drift) but never larger, mirroring the payment side.
+  const unlistedLeg = { scheme: "exact", network: "eip155:999", asset: "0x" + "d".repeat(40), payTo: basePayment.pay_to };
+  const unlistedPay = { ...basePayment, scheme: "exact", network: "eip155:999", asset: "0x" + "d".repeat(40), asset_decimals: undefined };
+  const masked = scan("outgoing", {
+    payment: { ...unlistedPay, amount: "2000000", nonce: "0xn2l" },
+    expected_price_usd: 2,
+    context: { origin: "planning", offer: offer({ ...unlistedLeg, maxAmountRequired: "20000", extra: { decimals: 4 } }) },
+  });
+  const maskedDrift = masked.checks.find((c) => c.id === "drift.price");
+  check("an offer declaring 4 decimals cannot mask a 100× atomic price jump", maskedDrift?.severity === "high" && Math.round((maskedDrift.details as { ratio: number }).ratio) === 100 && (maskedDrift.details as { offer_decimals: number }).offer_decimals === 6, masked.checks.filter((c) => c.verdict !== "allow"));
+  const cheapLooking = scan("outgoing", {
+    payment: { ...unlistedPay, amount: "2000000", nonce: "0xn2m" },
+    expected_price_usd: 2,
+    context: { origin: "planning", offer: offer({ ...unlistedLeg, maxAmountRequired: "2000000", extra: { decimals: 9 } }) },
+  });
+  check("an offer declaring 9 decimals (listing looks 1000× cheaper) is still caught as drift", cheapLooking.checks.find((c) => c.id === "drift.price")?.severity === "high", cheapLooking.checks.filter((c) => c.verdict !== "allow"));
+  const canonicalLeg = scan("outgoing", {
+    payment: { ...basePayment, scheme: "exact", network: "eip155:8453", asset: CANONICAL_USDC["eip155:8453"], amount: "10000", nonce: "0xn2n" },
+    expected_price_usd: 0.01,
+    context: { origin: "planning", offer: offer({ ...base, asset: CANONICAL_USDC["eip155:8453"], asset_decimals: undefined, extra: { decimals: 18 } }) },
+  });
+  check("a canonical-USDC offer leg is valued at server-known decimals, not its declared 18", hasCheck(canonicalLeg, "drift.clean") && !hasCheck(canonicalLeg, "drift.price"), canonicalLeg.checks.filter((c) => c.verdict !== "allow"));
 }
 
 console.log("\n— freshness-claim advisory (N1) —");

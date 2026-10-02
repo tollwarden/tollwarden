@@ -12,9 +12,16 @@
  *     the asset is canonical USDC on a known network, or when no asset is
  *     declared, decimals are taken from the server's own table (6), and a
  *     client-supplied `asset_decimals` that disagrees is IGNORED and flagged.
- *   - Only for a declared asset TollWarden does not know are the client's
- *     decimals honored — and that asset already fails `asset.not_canonical`
- *     unless the operator opted into ALLOW_NON_USDC.
+ *   - For a declared asset TollWarden does not know (any asset on a network
+ *     missing from CANONICAL_USDC, x402 v1 names such as "base" included),
+ *     `asset_decimals` cannot be verified, and in the SDK path it is copied
+ *     straight from the seller's 402 offer. So it may RAISE the value but
+ *     never lower it below the 6-decimal reading, i.e. decimals =
+ *     min(declared, 6). A declaration above 6 is ignored and flagged. A
+ *     genuine 18-decimal token is then over-valued by 10^12 and will usually
+ *     hit the absolute ceiling. That is the intended failure direction; the
+ *     alternative let a seller declare 18 for a 6-decimal token and shrink a
+ *     payment under every USD cap (audit 2026-10-02).
  *   - `amount_usd` is used only when no atomic amount is present. It is
  *     self-reported; the wallet-side enforcer's atomic caps are the backstop
  *     for callers who cannot supply the atomic amount.
@@ -22,14 +29,23 @@
 import type { CheckResult, PaymentDetails } from "../types.ts";
 import { knownAssetDecimals } from "./asset.ts";
 
-const DEFAULT_DECIMALS = 6; // USDC, the x402 default asset
+export const DEFAULT_DECIMALS = 6; // USDC, the x402 default asset
 
 export type ValueSource =
   | "atomic_known"     // amount + decimals from the server's asset table
   | "atomic_default"   // amount, no asset declared → USDC decimals assumed
-  | "atomic_declared"  // amount + client decimals (asset unknown to the server)
+  | "atomic_declared"  // amount, asset unknown to the server → min(declared, 6)
   | "self_reported"    // amount_usd only
   | "none";
+
+/**
+ * A declared decimals count worth reading, as an integer in 0..36 given as a
+ * number or (in offers) a digit string. Anything else counts as undeclared.
+ */
+export function parseDeclaredDecimals(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : typeof v === "string" && /^\d{1,2}$/.test(v.trim()) ? Number(v.trim()) : NaN;
+  return Number.isInteger(n) && n >= 0 && n <= 36 ? n : undefined;
+}
 
 export interface ResolvedValue {
   usd: number | null;
@@ -42,10 +58,7 @@ export interface ResolvedValue {
 
 /** Resolve the payment's USD value, with provenance. See the module comment. */
 export function resolveValue(payment: PaymentDetails): ResolvedValue {
-  const declared =
-    typeof payment.asset_decimals === "number" && Number.isInteger(payment.asset_decimals) && payment.asset_decimals >= 0 && payment.asset_decimals <= 36
-      ? payment.asset_decimals
-      : undefined;
+  const declared = parseDeclaredDecimals(payment.asset_decimals);
 
   if (payment.amount !== undefined) {
     const atomic = Number(payment.amount);
@@ -60,7 +73,9 @@ export function resolveValue(payment: PaymentDetails): ResolvedValue {
         decimals = DEFAULT_DECIMALS;
         source = "atomic_default";
       } else {
-        decimals = declared ?? DEFAULT_DECIMALS;
+        // Unverifiable asset. Fewer decimals than 6 only raises the value and
+        // is honored; more would shrink it and is ignored (and flagged below).
+        decimals = Math.min(declared ?? DEFAULT_DECIMALS, DEFAULT_DECIMALS);
         source = "atomic_declared";
       }
       const usd = atomic / 10 ** decimals;
@@ -81,9 +96,12 @@ export function resolveUsd(payment: PaymentDetails): number | null {
 /**
  * Surfaces a client-declared `asset_decimals` that the server refused to use.
  * On canonical USDC the only honest value is 6; anything else is a client bug
- * or an attempt to shrink the value under every USD cap. Flag, not block: the
- * value itself has already been computed from the server's table, so the
- * caps hold either way — this just makes the attempt visible.
+ * or an attempt to shrink the value under every USD cap. On an asset the
+ * server cannot verify, a declaration above 6 is either that same attempt or
+ * a genuine high-decimal token the caps now over-value, and only a human
+ * checking the token can tell which. Flag, not block: the value itself was
+ * computed without the declaration, so the caps hold either way, and this
+ * just makes the declaration visible.
  */
 export function checkValueProvenance(payment: PaymentDetails): CheckResult | null {
   const v = resolveValue(payment);
@@ -108,17 +126,19 @@ export function checkValueProvenance(payment: PaymentDetails): CheckResult | nul
     };
   }
 
-  if ((v.source !== "atomic_known" && v.source !== "atomic_default") || v.declared === undefined) return null;
-  if (v.declared === v.decimals) return null;
+  if (v.declared === undefined || v.declared === v.decimals) return null;
+  const reason =
+    v.source === "atomic_declared"
+      ? `asset_decimals=${v.declared} was declared for asset ${payment.asset} on ${payment.network ?? "an undeclared network"}, which TollWarden cannot verify. An unverifiable declaration may raise a payment's value but never lower it below the ${DEFAULT_DECIMALS}-decimal reading, so every cap judged this payment at ${v.decimals} decimals ($${v.usd.toFixed(6)}). Declaring ${v.declared} for a ${DEFAULT_DECIMALS}-decimal token would shrink the payment under every USD cap; if the token really has ${v.declared} decimals it is over-valued here and the caps may refuse it. Check the token's decimals on-chain before signing. In the SDK path this value comes from the seller's 402 offer.`
+      : `asset_decimals=${v.declared} was declared, but ${
+          v.source === "atomic_known" ? `the asset is canonical USDC on ${payment.network}` : "no asset was declared and USDC is assumed"
+        } (${v.decimals} decimals). The value was computed from the server-known decimals, not the declared ones — declaring more decimals than the token has would shrink the payment under every USD cap. Fix the client, or declare the actual asset contract.`;
   return {
     id: "value.decimals_ignored",
     name: "Payment value",
     verdict: "flag",
     severity: "medium",
-    reason:
-      `asset_decimals=${v.declared} was declared, but ${
-        v.source === "atomic_known" ? `the asset is canonical USDC on ${payment.network}` : "no asset was declared and USDC is assumed"
-      } (${v.decimals} decimals). The value was computed from the server-known decimals, not the declared ones — declaring more decimals than the token has would shrink the payment under every USD cap. Fix the client, or declare the actual asset contract.`,
+    reason,
     details: { declared_decimals: v.declared, used_decimals: v.decimals, amount_usd: v.usd, value_source: v.source },
   };
 }

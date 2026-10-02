@@ -20,6 +20,7 @@ import {
   TollWardenEnforcer,
   TollWardenEnforcementError,
   paymentFromTypedData,
+  paymentFromOffer,
   computePaymentCommitment,
   verifyAttestation,
   wrapFetchWithTollWarden,
@@ -842,6 +843,24 @@ const merchant = createServer((req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(402, { "content-type": "application/json" });
     return res.end(JSON.stringify({ error: "payment required" })); // no accepts[]
   }
+  if (u.pathname === "/unlisted") {
+    // A seller on a network the server has no USDC table for, declaring 18
+    // decimals for a $20 (6-decimal) amount.
+    res.writeHead(402, { "content-type": "application/json" });
+    return res.end(JSON.stringify({
+      x402Version: 2,
+      accepts: [{
+        scheme: "exact",
+        network: "eip155:999",
+        maxAmountRequired: "20000000",
+        payTo: "0xNiceMerchant00000000000000000000000000001",
+        asset: "0x" + "d".repeat(40),
+        resource: `http://localhost${u.pathname}`,
+        description: "Report",
+        extra: { decimals: 18 },
+      }],
+    }));
+  }
   res.writeHead(402, { "content-type": "application/json" });
   res.end(
     JSON.stringify({
@@ -939,6 +958,27 @@ function signingPayingFetch(signer: TypedDataSigner): typeof fetch {
   check("both scans ran (outgoing + offer)", seen.scans.length === scansBefore + 2, seen.scans.length - scansBefore);
   const outgoingScan = seen.scans[scansBefore]!.body;
   check("offer fields mapped into the scan", outgoingScan.payment.pay_to?.startsWith("0xNiceMerchant") && outgoingScan.payment.amount === "10000" && outgoingScan.payment.asset_decimals === 6, outgoingScan.payment);
+}
+{
+  // Seller-declared decimals. The wrapper forwards the seller's 18 untouched
+  // so the server can refuse it (it values an unverifiable asset at no more
+  // than 6 decimals) and flag it. The server suite runs this same mapping
+  // through the real scanner; this mock only records what was sent.
+  const tollwarden = new TollWardenClient({ baseUrl: BASE, agentId: "wrap-decimals" });
+  const guardedFetch = wrapFetchWithTollWarden(payingFetch, tollwarden);
+  const scansBefore = seen.scans.length;
+  await guardedFetch(`${MERCHANT}/unlisted`);
+  const sent = seen.scans[scansBefore]?.body.payment;
+  check("a seller's declared 18 on an unlisted network reaches the outgoing scan unchanged", sent?.asset_decimals === 18 && sent?.network === "eip155:999" && sent?.amount === "20000000", sent);
+
+  // Lockstep with Python's payment_from_offer: identical JSON in, identical
+  // asset_decimals out. JSON 18.0 is a float in Python and 18 here.
+  const entry = { scheme: "exact", network: "eip155:999", maxAmountRequired: "20000000", payTo: "0xNiceMerchant00000000000000000000000000001" };
+  const mappedFrom = (extraJson: string) => paymentFromOffer({ ...entry, extra: JSON.parse(extraJson) }, "https://seller.example/r").asset_decimals;
+  const kept: Array<[string, number]> = [['{"decimals":18}', 18], ['{"decimals":6}', 6], ['{"decimals":0}', 0], ['{"decimals":36}', 36], ['{"decimals":18.0}', 18]];
+  const dropped = ['{"decimals":18.5}', '{"decimals":-1}', '{"decimals":37}', '{"decimals":true}', '{"decimals":"18"}', '{"decimals":null}', '{"decimals":1e400}', "{}"];
+  check("paymentFromOffer forwards integer decimals 0..36", kept.every(([j, want]) => mappedFrom(j) === want), kept.map(([j]) => [j, mappedFrom(j)]));
+  check("paymentFromOffer drops non-integer, out-of-range, boolean and string decimals", dropped.every((j) => mappedFrom(j) === undefined), dropped.map((j) => [j, mappedFrom(j)]));
 }
 {
   // Block path: the paying fetch is NEVER invoked.

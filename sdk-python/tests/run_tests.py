@@ -37,6 +37,7 @@ from tollwarden import (
     TollWardenEnforcer,
     TollWardenError,
     compute_payment_commitment,
+    payment_from_offer,
     payment_from_typed_data,
     verify_attestation,
     wrap_transport_with_tollwarden,
@@ -895,6 +896,58 @@ check("offer fields mapped into the scan",
       and out_body["payment"].get("amount") == "10000"
       and out_body["payment"].get("asset_decimals") == 6,
       out_body["payment"])
+
+# Seller-declared decimals. The wrapper forwards the seller's 18 untouched so
+# the server can refuse it (it values an unverifiable asset at no more than 6
+# decimals) and flag it. The server suite runs this same entry through the real
+# scanner via the TS paymentFromOffer; this mock only records what was sent.
+UNLISTED_ENTRY = {
+    "scheme": "exact",
+    "network": "eip155:999",
+    "maxAmountRequired": "20000000",
+    "payTo": "0x" + "e" * 40,
+    "asset": "0x" + "d" * 40,
+    "resource": "https://seller.example/report",
+    "description": "Report",
+    "extra": {"decimals": 18},
+}
+
+
+def unlisted_transport(method, url, headers, body):
+    return 402, {}, json.dumps({"x402Version": 2, "accepts": [UNLISTED_ENTRY]}).encode()
+
+
+tollwarden = TollWardenClient(base_url=BASE, agent_id="wrap-decimals-py")
+guarded = wrap_transport_with_tollwarden(paying_transport, tollwarden, base_transport=unlisted_transport)
+scans_before = len(seen["scans"])
+guarded("GET", "https://seller.example/report", {}, None)
+sent = seen["scans"][scans_before]["body"]["payment"] if len(seen["scans"]) > scans_before else {}
+check("a seller's declared 18 on an unlisted network reaches the outgoing scan unchanged",
+      sent.get("asset_decimals") == 18 and sent.get("network") == "eip155:999" and sent.get("amount") == "20000000", sent)
+check("payment_from_offer maps the seller entry to the exact dict the server suite scans",
+      payment_from_offer(UNLISTED_ENTRY, "https://seller.example/report") == {
+          "scheme": "exact", "network": "eip155:999", "asset": "0x" + "d" * 40, "amount": "20000000",
+          "pay_to": "0x" + "e" * 40, "resource_url": "https://seller.example/report",
+          "description": "Report", "asset_decimals": 18,
+      })
+
+# Lockstep with the TS paymentFromOffer: identical JSON in, identical
+# asset_decimals out. JSON 18.0 is a float here and a plain 18 in JavaScript.
+_entry = {"scheme": "exact", "network": "eip155:999", "maxAmountRequired": "20000000",
+          "payTo": "0xNiceMerchant00000000000000000000000000001"}
+
+
+def _mapped_from(extra_json: str):
+    return payment_from_offer(dict(_entry, extra=json.loads(extra_json)), "https://seller.example/r").get("asset_decimals")
+
+
+_kept = [('{"decimals":18}', 18), ('{"decimals":6}', 6), ('{"decimals":0}', 0), ('{"decimals":36}', 36), ('{"decimals":18.0}', 18)]
+_dropped = ['{"decimals":18.5}', '{"decimals":-1}', '{"decimals":37}', '{"decimals":true}', '{"decimals":"18"}',
+            '{"decimals":null}', '{"decimals":1e400}', "{}"]
+check("payment_from_offer forwards integer decimals 0..36",
+      all(_mapped_from(j) == want and type(_mapped_from(j)) is int for j, want in _kept), [(j, _mapped_from(j)) for j, _ in _kept])
+check("payment_from_offer drops non-integer, out-of-range, boolean and string decimals",
+      all(_mapped_from(j) is None for j in _dropped), [(j, _mapped_from(j)) for j in _dropped])
 
 # Block path: the paying transport is NEVER invoked.
 tollwarden = TollWardenClient(base_url=BASE)

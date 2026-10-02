@@ -68,17 +68,26 @@ export interface WrapFetchOptions {
   reportOutcomes?: boolean;
 }
 
-/** Defensive mapping from an x402 402 body's requirements entry to payment fields. */
+/**
+ * Defensive mapping from an x402 402 body's requirements entry to payment fields.
+ *
+ * `extra.decimals` is the SELLER's claim about its own token. It is forwarded
+ * only as an integer in 0..36 (the range the server reads) so the server can
+ * flag a declaration it refuses; the server never lets it shrink a payment
+ * under a USD cap. Python's payment_from_offer forwards and drops exactly the
+ * same values.
+ */
 export function paymentFromOffer(entry: Record<string, unknown>, requestUrl: string): PaymentDetails {
   const s = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
   const amount = s(entry.maxAmountRequired) ?? s(entry.amount) ?? (typeof entry.maxAmountRequired === "number" ? String(entry.maxAmountRequired) : undefined);
   const extra = (typeof entry.extra === "object" && entry.extra !== null ? entry.extra : {}) as Record<string, unknown>;
+  const decimals = extra.decimals;
   return {
     scheme: s(entry.scheme),
     network: s(entry.network),
     asset: s(entry.asset),
     amount,
-    asset_decimals: typeof extra.decimals === "number" ? extra.decimals : undefined,
+    asset_decimals: typeof decimals === "number" && Number.isInteger(decimals) && decimals >= 0 && decimals <= 36 ? decimals : undefined,
     pay_to: s(entry.payTo) ?? s(entry.pay_to),
     resource_url: s(entry.resource) ?? requestUrl,
     description: s(entry.description),
