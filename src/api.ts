@@ -512,9 +512,11 @@ function requireOwner(cfg: TollWardenConfig, store: Store, apiKey: string | unde
  * that agent's live credential anywhere. The hash is what /v1/keys returns on
  * creation and what /v1/keys/rotate returns on rotation.
  *
- * Only scans recorded AFTER tagging carry the flag. Existing audit records are
- * immutable by design, so the split is honest going forward and silent about
- * the past rather than retroactively rewritten.
+ * Only audit records written AFTER tagging carry the flag, because audit
+ * records are immutable. The public split does not depend on that flag. It
+ * reads this key's per-key counters (see computePublicStats), so the key's
+ * earlier keyed scans move to first_party as well. Anonymous scans made
+ * without the key were never attributable and stay third-party.
  */
 export function handleAdminSetFirstParty(
   cfg: TollWardenConfig,
@@ -547,7 +549,7 @@ export function handleAdminSetFirstParty(
       key_hash: keyHash,
       first_party: rec.first_party === true,
       note:
-        "Applies to scans recorded from now on. Audit records are immutable, so earlier scans on this key stay counted as third-party.",
+        "Public stats read per-key counters, so this change also covers the key's earlier scans once the /v1/stats cache refreshes (up to 5 minutes). Scans made without this key are never attributed to it.",
     },
   };
 }
