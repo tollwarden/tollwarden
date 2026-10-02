@@ -4,7 +4,7 @@
 
 [![x402](https://img.shields.io/badge/x402-v2-blue)](https://github.com/x402-foundation/x402)
 [![network](https://img.shields.io/badge/settles%20on-Base%20(USDC)-0052FF)](https://docs.cdp.coinbase.com/x402/quickstart-for-sellers)
-[![tests](https://img.shields.io/badge/tests-593%2F593-brightgreen)](test/run-tests.ts)
+[![tests](https://img.shields.io/badge/tests-626%2F626-brightgreen)](test/run-tests.ts)
 [![npm](https://img.shields.io/npm/v/@tollwarden/client?label=sdk)](https://www.npmjs.com/package/@tollwarden/client)
 [![license](https://img.shields.io/badge/license-BUSL--1.1-lightgrey)](LICENSE)
 
@@ -70,9 +70,9 @@ Each exposes the same three tools (scan / check reputation / report) plus a fram
 
 | Check | What it catches |
 |---|---|
-| Velocity limits | ≥N scans/min (flag; block at 2×), cumulative hourly spend cap — rate and spend are observed facts, not self-reports. Scoped to the **account behind your API key**, so a fresh `agent_id` per request opens no new window; only anonymous scans fall back to `agent_id`/`payer` |
+| Velocity limits | ≥N scans/min (flag; block at 2×), cumulative hourly spend cap — rate and spend are observed facts, not self-reports. Scoped to the **account behind your API key**, so a fresh `agent_id` per request opens no new window; only anonymous scans fall back to `agent_id`/`payer`. A payment TollWarden blocks still takes a rate slot but adds nothing to the hourly spend, so a seller's absurd quote, refused at the ceiling, does not lock you out of paying anyone else for the next hour |
 | First-contact size cap | First payment to a never-seen counterparty above a threshold |
-| Asset verification | `asset` contract that isn't canonical USDC on the declared network (lookalike-token attack) |
+| Asset verification | `asset` contract that isn't canonical USDC on the declared network (lookalike-token attack). The network may be a CAIP-2 id or an x402 v1 name (`base`, `base-sepolia`, `polygon`, `ethereum`); both reach the same check |
 | Merchant pinning (TOFU) | Two tiers. **Your account's own pin**: `pay_to` rotation on a domain *you* have paid before → block — nobody else can have written that record. **Shared observation**: the first address *any* caller presented for the domain; a mismatch there is a flag ("another caller saw a different address"), because both sides are client input — it becomes a block only once the non-blocking CDP Bazaar cross-check has verified the pinned address as the domain's merchant. Pin **age** and the **named** corroboration sources ship as signed attestation fields (see below), so a wallet can tell a four-minute-old pin from a six-month-old one instead of trusting both equally |
 | Address poisoning | `pay_to` that matches a counterparty you have paid, your own pinned merchant, or a CDP-verified pin on its first + last characters but differs in the middle — the truncated-display ("0x2096…287C") vanity-address attack → block. A lookalike of an address some *other* caller merely presented → flag, so a stranger cannot seed a vanity "pin" and get your honest payment blocked as the lookalike. Also catches bait: a near-copy of the recipient or a trusted address *planted in the content the agent just read*. Blocked payments are rolled back out of trust state, so repeat attempts keep detecting |
 | ScoutScore trust signal (opt-in) | Merchant domains rated LOW/VERY_LOW by [ScoutScore](https://scoutscore.ai) (spam farms, template clones, dead endpoints) → flag, clearly labeled as an external third-party signal. Lookups are async + cached (zero scan latency), share the domain only, and can never block on their own. Enable with `SCOUTSCORE=on` |
@@ -239,7 +239,7 @@ npm install
 
 npm run dev            # local dev server — payments off
 npm run demo:replay    # replay-attack demo: fresh nonce ALLOW → reused nonce BLOCK
-npm test               # 593-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
+npm test               # 626-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
 npm run eval           # detection eval corpus: attack payloads + benign FP guards, graded via real scans (gates CI + publish)
 ```
 
@@ -308,7 +308,7 @@ Published for transparency — these are the thresholds your scans are judged ag
 | First contact | first payment to a never-seen counterparty flagged above $1 |
 | Deep content analysis | bypassed below $0.005 payment value — until cumulative scanned spend to the counterparty crosses $0.005, then always on for that pair (`policy.force_deep` overrides; always on for Pro/Scale) |
 | Replay window | nonces tracked for 24 h |
-| Asset check | non-canonical USDC on the declared network → block |
+| Asset check | non-canonical USDC on the declared network (CAIP-2 id or x402 v1 name) → block |
 | Merchant pinning | TOFU per resource domain, per account: rotation on a domain your account pinned → block; rotation against another caller's unverified observation → flag; against a CDP-verified pin → block for anyone. Pin age + named corroboration sources published as signed attestation evidence |
 | Address poisoning | ≥4 shared hex chars on both ends of a known address (but not equal) → block when the known address is yours (paid before / your pin) or CDP-verified, flag when it is another caller's unverified pin; same lookalike planted in just-read content → block (untrusted origin, trusted reference) or flag |
 | Payment value | resolved from the atomic `amount` and **server-known** token decimals (canonical USDC = 6). A client-declared `asset_decimals` that disagrees is ignored and flagged. For an asset the server cannot verify (including any network it has no USDC entry for), a declaration may raise the value but never lower it below the 6-decimal reading, so a seller's `extra.decimals` cannot shrink a payment under any cap; a genuine 18-decimal token there is over-valued and usually refused at the ceiling. `amount_usd` is used only when no atomic amount is given, and is flagged when it disagrees with one |
@@ -340,10 +340,10 @@ src/
   commitment.ts   Payment hashing (attestation binding + audit digest)
 mcp/server.ts     MCP server (12 tools — npx tollwarden)
 examples/         replay-demo.ts — reused-nonce attack blocked end-to-end
-test/             593-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
+test/             626-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
 eval/             detection eval corpus + runner (attacks must catch, benign must pass — npm run eval, gates CI)
-sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 130 tests)
-sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 135 tests)
+sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 138 tests)
+sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 144 tests)
 ```
 
 Design notes: verdicts aggregate worst-first (any block ⇒ block); `risk_score` is severity-based with compounding for multiple independent findings; the detection core has **zero runtime dependencies**, so the full suite runs with `node --experimental-strip-types` and no install.

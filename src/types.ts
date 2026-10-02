@@ -16,7 +16,8 @@ export type PaymentOrigin =
 export interface PaymentDetails {
   /** x402 scheme, e.g. "exact" */
   scheme?: string;
-  /** CAIP-2 network id, e.g. "eip155:8453" */
+  /** CAIP-2 network id, e.g. "eip155:8453". x402 v1 names ("base") are
+   * resolved by networkKey for lookups; the commitment hashes it as sent. */
   network?: string;
   /** Token contract address (e.g. USDC) */
   asset?: string;

@@ -37,6 +37,11 @@ export * from "./wrap.ts";
 // ---------------------------------------------------------------------------
 export type Verdict = "allow" | "flag" | "block" | "override:allow";
 export type PaymentOrigin = "planning" | "user_instruction" | "tool_result" | "fetched_content" | "unknown";
+/** When in the payment flow a scan runs. "pre_sign" = before the payment is
+ * signed, so it has no nonce yet and the server does not flag the missing
+ * one. A nonce that IS present is replay-checked either way. Absent means
+ * post_sign. */
+export type ScanPhase = "pre_sign" | "post_sign";
 
 export interface PaymentDetails {
   scheme?: string;
@@ -147,7 +152,11 @@ export interface ScanOptions {
   agentId?: string;
   expectedPriceUsd?: number;
   /** Explicit provenance; overrides the automatic observation-based tagging. */
-  context?: { origin?: PaymentOrigin; content?: string; content_source_url?: string };
+  context?: { origin?: PaymentOrigin; content?: string; content_source_url?: string; phase?: ScanPhase };
+  /** Sent as `context.phase` ALONGSIDE whichever provenance applies, so
+   * unlike `context` it keeps the automatic observation-based tagging. Wins
+   * over `context.phase`. wrapFetchWithTollWarden sets "pre_sign". */
+  phase?: ScanPhase;
   policy?: { force_deep?: boolean; skip_deep?: boolean };
   /** With guard*: also throw on "flag" verdicts (default: only "block"). */
   strict?: boolean;
@@ -446,7 +455,15 @@ export class TollWardenClient {
     this.lastObservation = null;
   }
 
-  private buildContext(explicit?: ScanOptions["context"]): { origin: PaymentOrigin; content?: string; content_source_url?: string } {
+  private buildContext(explicit?: ScanOptions["context"], phase?: ScanPhase): { origin: PaymentOrigin; content?: string; content_source_url?: string; phase?: ScanPhase } {
+    // Phase says WHEN the scan runs, not where the decision came from, so it
+    // rides along with whichever provenance applies and never replaces it.
+    const p = phase ?? explicit?.phase;
+    const ctx = this.provenanceContext(explicit);
+    return p === undefined ? ctx : { ...ctx, phase: p };
+  }
+
+  private provenanceContext(explicit?: ScanOptions["context"]): { origin: PaymentOrigin; content?: string; content_source_url?: string } {
     if (explicit) return { origin: explicit.origin ?? this.defaultOrigin, content: explicit.content, content_source_url: explicit.content_source_url };
     if (this.explicitOrigin) return { origin: this.explicitOrigin };
     const obs = this.lastObservation;
@@ -523,7 +540,7 @@ export class TollWardenClient {
       agent_id: opts.agentId ?? this.agentId,
       payment,
       expected_price_usd: opts.expectedPriceUsd,
-      context: this.buildContext(opts.context),
+      context: this.buildContext(opts.context, opts.phase),
       policy: opts.policy,
     };
     const scan = await this.requestJson<ScanResponse>("POST", `/v1/scan/${direction}`, body);

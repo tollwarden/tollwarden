@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import threading
 import time
@@ -487,10 +488,10 @@ check("report files successfully", r["accepted"] is True)
 print("\n— wallet-side enforcement kit —")
 
 
-def typed_data_for(p: dict) -> dict:
+def typed_data_for(p: dict, chain_id: int = 8453) -> dict:
     """EIP-3009 typed data matching a payment (what an x402 client asks the wallet to sign)."""
     return {
-        "domain": {"name": "USD Coin", "version": "2", "chainId": 8453, "verifyingContract": p.get("asset")},
+        "domain": {"name": "USD Coin", "version": "2", "chainId": chain_id, "verifyingContract": p.get("asset")},
         "primaryType": "TransferWithAuthorization",
         "types": {
             "TransferWithAuthorization": [
@@ -949,6 +950,61 @@ check("payment_from_offer forwards integer decimals 0..36",
 check("payment_from_offer drops non-integer, out-of-range, boolean and string decimals",
       all(_mapped_from(j) is None for j in _dropped), [(j, _mapped_from(j)) for j in _dropped])
 
+# x402 v1 network names. The mapper emits the CAIP-2 id of the chain the v1
+# client signs for, so the scanned payment, the approval and the commitment
+# guard_signer recomputes all hash the same network. The TS paymentFromOffer
+# maps the identical list below (lockstep).
+_v1_entry = {"scheme": "exact", "network": "base", "maxAmountRequired": "10000", "payTo": "0x" + "e" * 40,
+             "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "resource": "https://seller.example/v1",
+             "description": "Report"}
+mapped_v1 = payment_from_offer(_v1_entry, "https://seller.example/v1")
+check('payment_from_offer maps a v1 "base" offer to network eip155:8453', mapped_v1.get("network") == "eip155:8453", mapped_v1)
+check("...the same dict the TS paymentFromOffer produces",
+      mapped_v1 == {
+          "scheme": "exact", "network": "eip155:8453", "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "amount": "10000", "pay_to": "0x" + "e" * 40, "resource_url": "https://seller.example/v1", "description": "Report",
+      }, mapped_v1)
+
+_V1_NAMES = [
+    ("ethereum", "eip155:1"), ("sepolia", "eip155:11155111"), ("abstract", "eip155:2741"), ("abstract-testnet", "eip155:11124"),
+    ("base-sepolia", "eip155:84532"), ("base", "eip155:8453"), ("avalanche-fuji", "eip155:43113"), ("avalanche", "eip155:43114"),
+    ("iotex", "eip155:4689"), ("sei", "eip155:1329"), ("sei-testnet", "eip155:1328"), ("polygon", "eip155:137"),
+    ("polygon-amoy", "eip155:80002"), ("peaq", "eip155:3338"), ("story", "eip155:1514"), ("educhain", "eip155:41923"),
+    ("skale-base-sepolia", "eip155:324705682"), ("megaeth", "eip155:4326"), ("monad", "eip155:143"), ("stable", "eip155:988"),
+    ("stable-testnet", "eip155:2201"),
+]
+_wrong_v1 = [(n, i) for n, i in _V1_NAMES if payment_from_offer(dict(_v1_entry, network=n), "https://seller.example/v1").get("network") != i]
+check("every x402 v1 EVM name maps to its CAIP-2 id", not _wrong_v1, _wrong_v1)
+# Exact match only, like the v1 client's own lookup: a name it would not sign
+# for is not given a chain here either.
+_pass_through = ["eip155:8453", "eip155:999", "Base", "BASE", " base", "base ", "arbitrum", "base-mainnet", "solana",
+                 "solana-devnet", "constructor", "__proto__", "toString", "hasOwnProperty"]
+_changed = [n for n in _pass_through if payment_from_offer(dict(_v1_entry, network=n), "https://seller.example/v1").get("network") != n]
+check("unknown names, near misses, other casing or whitespace, and prototype keys pass through unchanged", not _changed, _changed)
+
+# The table is the server's X402_V1_NETWORKS, which the server suite pins to
+# @x402/evm's own v1 table (and the TS paymentFromOffer to both).
+from tollwarden.wrap import _X402_V1_NETWORKS  # noqa: E402
+
+_asset_ts = (Path(__file__).resolve().parents[2] / "src" / "detectors" / "asset.ts").read_text(encoding="utf-8")
+_server_block = re.search(r"X402_V1_NETWORKS[^=]*=\s*\{(.*?)\};", _asset_ts, re.S)
+_server_v1 = dict(re.findall(r'^\s*"?([a-z0-9-]+)"?\s*:\s*"(eip155:\d+)"', _server_block.group(1), re.M)) if _server_block else {}
+check("the v1 table equals the server's X402_V1_NETWORKS (src/detectors/asset.ts)",
+      len(_server_v1) == len(_V1_NAMES) and _X402_V1_NETWORKS == _server_v1 == dict(_V1_NAMES),
+      sorted(set(_X402_V1_NETWORKS.items()) ^ set(_server_v1.items())))
+
+# The mapping names the one chain the v1 client signs for. An approval of the
+# mapped "base" offer admits a Base signature and nothing else.
+v1_enf = TollWardenEnforcer(trusted_key_hex=PINNED)
+v1_enf.approve(make_scan(mapped_v1, "outgoing"), mapped_v1)
+w_v1 = FakeSigner()
+check('an approved v1 "base" offer does not admit the same transfer signed for chainId 84532',
+      expect_refusal(v1_enf.guard_signer(w_v1).sign_typed_data, typed_data_for(dict(mapped_v1, nonce="0xv1sep"), 84532)) is not None
+      and len(w_v1.signed) == 0)
+check("...and admits it signed for chainId 8453",
+      expect_refusal(v1_enf.guard_signer(w_v1).sign_typed_data, typed_data_for(dict(mapped_v1, nonce="0xv1base"), 8453)) is None
+      and len(w_v1.signed) == 1)
+
 # Block path: the paying transport is NEVER invoked.
 tollwarden = TollWardenClient(base_url=BASE)
 guarded = wrap_transport_with_tollwarden(paying_transport, tollwarden, base_transport=merchant_transport("0xBADdrain"))
@@ -987,16 +1043,28 @@ except TollWardenBlockedError:
 # Composition: wrapper + enforcer + guarded signer. The wrapper registers the
 # offer's verdict; the client signs a nonce-bearing authorization; the enforcer
 # matches them. This is the enforced default path.
-def signing_paying_transport(signer, pay_to: str = "0xNiceMerchant00000000000000000000000000001"):
+def signing_chain_id(network: str) -> int:
+    """The chainId an x402 client signs for. A CAIP-2 id carries it; the v1
+    client looks a v1 name up in its own table, exact match (getEvmChainIdV1
+    in @x402/evm). Only the v1 names these tests use."""
+    if network.startswith("eip155:"):
+        return int(network[len("eip155:"):])
+    v1 = {"base": 8453, "base-sepolia": 84532}
+    if network not in v1:
+        raise ValueError(f"Unsupported v1 network: {network}")
+    return v1[network]
+
+
+def signing_paying_transport(signer, pay_to: str = "0xNiceMerchant00000000000000000000000000001", entry=None):
     """What a real x402 client does: mint a nonce, ask the (guarded) signer for
     the EIP-3009 signature, then retry with the payment header."""
 
     def transport(method, url, headers, body):
-        entry = OFFER_402["accepts"][0]
+        e = entry or OFFER_402["accepts"][0]
         signer.sign_typed_data(typed_data_for({
-            "network": entry["network"], "asset": entry["asset"], "pay_to": pay_to,
-            "amount": entry["maxAmountRequired"], "nonce": f"0xmint{time.time_ns():x}",
-        }))
+            "network": e["network"], "asset": e["asset"], "pay_to": pay_to,
+            "amount": e["maxAmountRequired"], "nonce": f"0xmint{time.time_ns():x}",
+        }, signing_chain_id(e["network"])))
         payments["count"] += 1
         return 200, {"content-type": "application/json"}, json.dumps({"data": "premium"}).encode()
 
@@ -1057,6 +1125,39 @@ payments["count"] = 0
 check("a flagged offer with an allow-only enforcer raises before the paying transport runs",
       expect_refusal(flagged, "GET", "https://merchant.example/premium", {}, None) is not None
       and payments["count"] == 0 and len(w4.signed) == 0)
+
+# An x402 v1 seller writes "base" in its 402. The v1 client signs for chainId
+# 8453 and guard_signer recomputes the commitment over eip155:8453, so the
+# wrapper has to scan and approve the offer under that id. Before 2026-10-02 it
+# approved "base" and refused every v1 seller.
+V1_SELLER_ENTRY = dict(OFFER_402["accepts"][0], network="base", extra={"name": "USD Coin", "version": "2"})
+
+
+def v1_seller_transport(method, url, headers, body):
+    return 402, {}, json.dumps({"x402Version": 1, "accepts": [V1_SELLER_ENTRY]}).encode()
+
+
+v1_enforcer = TollWardenEnforcer(trusted_key_hex=PINNED)
+w5 = FakeSigner()
+v1_guarded = wrap_transport_with_tollwarden(
+    signing_paying_transport(v1_enforcer.guard_signer(w5), entry=V1_SELLER_ENTRY),
+    TollWardenClient(base_url=BASE, agent_id="wrap-v1-py"), base_transport=v1_seller_transport, enforcer=v1_enforcer,
+)
+scans_before = len(seen["scans"])
+payments["count"] = 0
+try:
+    v1_status, _h, _b = v1_guarded("GET", "https://merchant.example/premium", {}, None)
+    v1_error = None
+except TollWardenError as exc:
+    v1_status, v1_error = None, str(exc)
+v1_signed_td = w5.signed[0][0][0] if w5.signed and w5.signed[0][0] else {}
+check("wrapper + enforcer + guard_signer sign a TransferWithAuthorization for an x402 v1 seller (\"base\", chainId 8453)",
+      v1_status == 200 and payments["count"] == 1 and len(w5.signed) == 1
+      and v1_signed_td.get("primaryType") == "TransferWithAuthorization" and v1_signed_td.get("domain", {}).get("chainId") == 8453,
+      (v1_status, v1_error, payments["count"], len(w5.signed)))
+v1_networks = [s["body"]["payment"].get("network") for s in seen["scans"][scans_before:]]
+check("...and both scans carried eip155:8453, the network that was signed",
+      len(v1_networks) == 2 and all(n == "eip155:8453" for n in v1_networks), v1_networks)
 
 # Unparseable 402 fails CLOSED.
 tollwarden = TollWardenClient(base_url=BASE)

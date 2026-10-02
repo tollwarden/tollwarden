@@ -80,9 +80,13 @@ export const ERC8004_IDENTITY_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539
  * file can carry the spec's `image` field without any external asset host. */
 export function logoSvg(): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <path d="M32 4 L56 14 V32 C56 46 46 56 32 60 C18 56 8 46 8 32 V14 Z" fill="#0b5cff"/>
-  <path d="M32 10 L50 17.5 V32 C50 42.8 42.5 50.6 32 54 C21.5 50.6 14 42.8 14 32 V17.5 Z" fill="#0e1526"/>
-  <path d="M22 32.5 L29 39.5 L43 25.5" fill="none" stroke="#22c55e" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="64" height="64" rx="14" fill="#0e1526"/>
+  <g fill="none" stroke="#0b5cff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12 C16 12 15.5 14.5 15.5 19 V26.5 C15.5 30 13.5 32 10.5 32 C13.5 32 15.5 34 15.5 37.5 V45 C15.5 49.5 16 52 21 52"/>
+    <path d="M43 12 C48 12 48.5 14.5 48.5 19 V26.5 C48.5 30 50.5 32 53.5 32 C50.5 32 48.5 34 48.5 37.5 V45 C48.5 49.5 48 52 43 52"/>
+  </g>
+  <circle cx="32" cy="32" r="9" fill="#22c55e"/>
+  <circle cx="32" cy="32" r="5.4" fill="none" stroke="#0e1526" stroke-width="1.8"/>
 </svg>
 `;
 }

@@ -17,7 +17,7 @@ import { checkPinning, checkCdpPinStatus, payeeEstablished, scheduleCdpPinVerify
 import { tenantKey } from "./store.ts";
 import { checkAddressPoisoning, checkContentLookalikes } from "./detectors/poisoning.ts";
 import { checkScoutScore, scheduleScoutScoreRefresh } from "./detectors/scoutscore.ts";
-import { checkVelocity } from "./detectors/velocity.ts";
+import { checkVelocity, recordVelocity } from "./detectors/velocity.ts";
 import { checkInjectionHistory, checkReputation, recordInjectionIncidents } from "./reputation.ts";
 import { checkDelivery } from "./outcomes.ts";
 
@@ -295,10 +295,19 @@ export function runScan(
     recordInjectionIncidents(store, req, scanId, checks);
   }
 
+  // Rate and hourly-spend windows are written only now, with the verdict
+  // known. A blocked scan takes a rate slot but adds no spend, so a seller's
+  // refused quote cannot cap the buyer's payments to everyone else (see
+  // velocity.ts).
+  if (direction === "outgoing") {
+    recordVelocity(store, velocityKey, usd, verdict);
+  }
+
   // Accumulate lifetime scanned spend for the cumulative deep-tier trigger.
   // Deliberately includes blocked scans: over-counting only widens deep
   // coverage, and an attacker inflating their OWN counter just deep-scans
-  // themselves sooner.
+  // themselves sooner. (The hourly spend cap above does the opposite, because
+  // it blocks.)
   if (cumKey && usd !== null && usd > 0) {
     const nowIso = new Date().toISOString();
     const rec = store.cumulativeSpend.get(cumKey) ?? { usd: 0, scans: 0, first_at: nowIso, last_at: nowIso };

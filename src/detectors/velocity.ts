@@ -11,8 +11,24 @@
  * rotating `agent_id` per request (audit 2026-09-19) — and since plan
  * headroom is granted per key, the cap and the headroom now share a scope.
  * All O(1)/O(window).
+ *
+ * The rate and spend windows are judged here but written by recordVelocity,
+ * which the scanner calls only after the verdict is aggregated. A BLOCKED scan
+ * keeps its per-minute rate slot (one scan is one count whatever it quotes, and
+ * a drain loop the other checks refuse is still a drain loop) but adds nothing
+ * to the hourly spend. In the SDK wrapper path the amount is the seller's 402
+ * quote, so counting a refused value would let one seller's absurd quote
+ * (blocked at the absolute ceiling, nothing paid) push every later payment
+ * from the account, to anyone, over the spend cap for an hour. A seller-chosen
+ * number must not block third-party payments (H-2). The hourly window
+ * therefore holds only what passed, which is the most an honoring wallet could
+ * have paid, and a refused scan carries no verdict a wallet enforcer would sign.
+ * Fail-closed is unchanged. Passed spend accumulates until the cap blocks, and
+ * a refused attempt neither eats nor frees headroom. (Contrast cumulativeSpend
+ * in the scanner, which counts blocked scans on purpose because over-counting
+ * there only widens deep-tier coverage, whereas this cap blocks.)
  */
-import type { CheckResult, ScanRequest } from "../types.ts";
+import type { CheckResult, ScanRequest, Verdict } from "../types.ts";
 import type { TollWardenConfig } from "../config.ts";
 import type { Store } from "../store.ts";
 
@@ -51,13 +67,10 @@ export function checkVelocity(
   const results: CheckResult[] = [];
   const now = Date.now();
 
-  // --- sliding windows (this scan included) ---
+  // --- sliding windows (this scan included; recorded by recordVelocity) ---
   const events = (store.velocity.get(key) ?? []).filter((e) => now - e.t < HOUR);
   const perMinute = events.filter((e) => now - e.t < MINUTE).length + 1;
   const hourUsd = events.reduce((s, e) => s + e.usd, 0) + (usd ?? 0);
-  events.push({ t: now, usd: usd ?? 0 });
-  store.velocity.set(key, events);
-  store.markDirty();
 
   if (perMinute >= cfg.maxPaymentsPerMinute * 2) {
     results.push({
@@ -85,7 +98,7 @@ export function checkVelocity(
       name: "Velocity & policy limits",
       verdict: "block",
       severity: "high",
-      reason: `Cumulative scanned spend of $${hourUsd.toFixed(4)} in the last hour for ${label} exceeds the $${cfg.maxUsdPerHour} cap (MAX_USD_PER_HOUR).`,
+      reason: `Cumulative scanned spend of $${hourUsd.toFixed(4)} in the last hour for ${label} (this payment plus every earlier one that was not blocked) exceeds the $${cfg.maxUsdPerHour} cap (MAX_USD_PER_HOUR).`,
       details: { hour_usd: hourUsd, cap_usd: cfg.maxUsdPerHour },
     });
   }
@@ -122,4 +135,18 @@ export function checkVelocity(
     });
   }
   return results;
+}
+
+/**
+ * Record an outgoing scan in its scope's windows, once its verdict is known.
+ * Every scan takes a per-minute rate slot; only a scan that was not blocked
+ * adds its value to the hourly spend. See the module comment for why.
+ */
+export function recordVelocity(store: Store, key: string | undefined, usd: number | null, verdict: Verdict): void {
+  if (!key) return;
+  const now = Date.now();
+  const events = (store.velocity.get(key) ?? []).filter((e) => now - e.t < HOUR);
+  events.push({ t: now, usd: verdict === "block" ? 0 : usd ?? 0 });
+  store.velocity.set(key, events);
+  store.markDirty();
 }

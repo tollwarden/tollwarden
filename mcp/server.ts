@@ -45,7 +45,7 @@ async function call(method: string, path: string, body?: unknown): Promise<strin
 
 const paymentSchema = z.object({
   scheme: z.string().optional(),
-  network: z.string().optional().describe("CAIP-2, e.g. eip155:8453"),
+  network: z.string().optional().describe("CAIP-2, e.g. eip155:8453 (x402 v1 names such as 'base' are also read)"),
   asset: z.string().optional(),
   amount: z.string().optional().describe("Atomic units, e.g. '10000' = $0.01 USDC"),
   amount_usd: z.number().optional(),

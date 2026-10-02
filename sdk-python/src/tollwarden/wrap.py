@@ -54,6 +54,34 @@ from . import (
 
 __all__ = ["wrap_transport_with_tollwarden", "payment_from_offer"]
 
+#: x402 v1 EVM network names and the CAIP-2 ids for the same chains. The same
+#: table as the server's X402_V1_NETWORKS (src/detectors/asset.ts), copied from
+#: EVM_NETWORK_CHAIN_ID_MAP in @x402/evm, the v1 client's own name to chain-id
+#: table. The TS paymentFromOffer carries the identical table.
+_X402_V1_NETWORKS: Dict[str, str] = {
+    "ethereum": "eip155:1",
+    "sepolia": "eip155:11155111",
+    "abstract": "eip155:2741",
+    "abstract-testnet": "eip155:11124",
+    "base-sepolia": "eip155:84532",
+    "base": "eip155:8453",
+    "avalanche-fuji": "eip155:43113",
+    "avalanche": "eip155:43114",
+    "iotex": "eip155:4689",
+    "sei": "eip155:1329",
+    "sei-testnet": "eip155:1328",
+    "polygon": "eip155:137",
+    "polygon-amoy": "eip155:80002",
+    "peaq": "eip155:3338",
+    "story": "eip155:1514",
+    "educhain": "eip155:41923",
+    "skale-base-sepolia": "eip155:324705682",
+    "megaeth": "eip155:4326",
+    "monad": "eip155:143",
+    "stable": "eip155:988",
+    "stable-testnet": "eip155:2201",
+}
+
 
 def _declared_decimals(v: Any) -> Optional[int]:
     """The seller's ``extra.decimals`` as an integer in 0..36, else None.
@@ -74,6 +102,13 @@ def _declared_decimals(v: Any) -> Optional[int]:
 def payment_from_offer(entry: Dict[str, Any], request_url: str) -> Dict[str, Any]:
     """Defensive mapping from an x402 402 body's requirements entry to payment fields.
 
+    ``network`` is emitted as the network that will be SIGNED. A v1 client
+    signs EIP-3009 for the chainId its own table gives a v1 name (exact
+    match), and guard_signer recomputes the commitment over
+    ``eip155:<chainId>``, so a v1 name becomes that CAIP-2 id here. The
+    scanned payment, the enforcer's approval and the signed authorization then
+    commit to the same network. Any other string passes through unchanged.
+
     ``extra.decimals`` is the SELLER's claim about its own token. It is
     forwarded only as an integer in 0..36 (the range the server reads) so the
     server can flag a declaration it refuses; the server never lets it shrink
@@ -88,9 +123,10 @@ def payment_from_offer(entry: Dict[str, Any], request_url: str) -> Dict[str, Any
         return None
 
     extra = entry.get("extra") if isinstance(entry.get("extra"), dict) else {}
+    network = s(entry.get("network"))
     payment: Dict[str, Any] = {
         "scheme": s(entry.get("scheme")),
-        "network": s(entry.get("network")),
+        "network": _X402_V1_NETWORKS.get(network, network) if network is not None else None,
         "asset": s(entry.get("asset")),
         "amount": s(entry.get("maxAmountRequired")) or s(entry.get("amount")),
         "pay_to": s(entry.get("payTo")) or s(entry.get("pay_to")),

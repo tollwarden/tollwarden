@@ -35,7 +35,7 @@ const PaymentDetails = {
     "The payment (or 402 offer) to screen. Provide as many fields as you have — every field improves detection coverage.",
   properties: {
     scheme: { type: "string", description: 'x402 scheme, e.g. "exact"' },
-    network: { type: "string", description: 'CAIP-2 network id, e.g. "eip155:8453"' },
+    network: { type: "string", description: 'CAIP-2 network id, e.g. "eip155:8453". x402 v1 names ("base", "base-sepolia", "polygon", ...) are read as their CAIP-2 id; payment_commitment hashes the string as sent' },
     asset: { type: "string", description: "Token contract address (e.g. USDC)" },
     amount: { type: "string", description: 'Amount in atomic token units, e.g. "10000" = $0.01 USDC' },
     amount_usd: { type: "number", description: "Alternative when no atomic amount is available: decimal USD value (self-reported; ignored and flagged when it disagrees with `amount`)" },

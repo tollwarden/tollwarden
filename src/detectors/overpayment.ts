@@ -13,7 +13,8 @@
  *     declared, decimals are taken from the server's own table (6), and a
  *     client-supplied `asset_decimals` that disagrees is IGNORED and flagged.
  *   - For a declared asset TollWarden does not know (any asset on a network
- *     missing from CANONICAL_USDC, x402 v1 names such as "base" included),
+ *     missing from CANONICAL_USDC, or one that is not canonical USDC there;
+ *     x402 v1 names such as "base" resolve to their CAIP-2 id first),
  *     `asset_decimals` cannot be verified, and in the SDK path it is copied
  *     straight from the seller's 402 offer. So it may RAISE the value but
  *     never lower it below the 6-decimal reading, i.e. decimals =

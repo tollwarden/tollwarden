@@ -13,7 +13,8 @@ import { personalSignHash, recoverPersonalSigner, verifyPersonalSign } from "../
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { keccak_256 } from "@noble/hashes/sha3";
 import { VerdictSigner } from "../src/verdictsign.ts";
-import { CANONICAL_USDC } from "../src/detectors/asset.ts";
+import { CANONICAL_USDC, X402_V1_NETWORKS, canonicalUsdcFor, knownAssetDecimals, networkKey } from "../src/detectors/asset.ts";
+import { EVM_NETWORK_CHAIN_ID_MAP } from "@x402/evm/v1";
 import { handleScan, createApiKey, consumeFreeCall, freeCallsRemaining, handlePlanSubscribe, handleUsage, handleAdminStats, handleAdminSetFirstParty, handleKeyRotate, handleKeyRevoke, handleApprovalConfig, handleReputationDispute } from "../src/api.ts";
 import { PLANS, HARD_CEILINGS, activePlan, resolveEffectiveConfig, plansCatalog } from "../src/plans.ts";
 import { sanitizeScanRequest } from "../src/sanitize.ts";
@@ -34,6 +35,7 @@ import { computePublicStats, computeUptime, type PublicStats } from "../src/pubs
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
 import { pinEvidenceFor } from "../src/detectors/pinning.ts";
 import { paymentFromOffer } from "../sdk/src/wrap.ts";
+import { TollWardenEnforcer, TollWardenEnforcementError } from "../sdk/src/enforce.ts";
 import { createServer as createHttpServer } from "node:http";
 import type { ScanRequest, ScanResponse } from "../src/types.ts";
 
@@ -158,6 +160,22 @@ console.log("\n— replay —");
   const r2 = scan("outgoing", req, store);
   check("pre_sign does not relax nonce reuse", r2.verdict === "block" && hasCheck(r2, "replay.nonce_reuse"));
 }
+{
+  // One authorization on one chain, presented under its x402 v1 name and
+  // then its CAIP-2 id, is a replay.
+  const store = new Store(null);
+  const first = scan("outgoing", { payment: { ...basePayment, network: "base", nonce: "0xnv1" }, expected_price_usd: 0.01, context: { origin: "planning" } }, store);
+  const again = scan("outgoing", { payment: { ...basePayment, network: "eip155:8453", nonce: "0xnv1" }, expected_price_usd: 0.01, context: { origin: "planning" } }, store);
+  check("nonce first seen under \"base\" blocks when re-presented under eip155:8453", first.verdict === "allow" && again.verdict === "block" && hasCheck(again, "replay.nonce_reuse"), again.checks.filter((c) => c.verdict !== "allow"));
+  const otherChain = scan("outgoing", { payment: { ...basePayment, network: "polygon", nonce: "0xnv1" }, expected_price_usd: 0.01, context: { origin: "planning" } }, store);
+  check("…but the same nonce on another chain is not a replay", !hasCheck(otherChain, "replay.nonce_reuse"), otherChain.checks.filter((c) => c.verdict !== "allow"));
+
+  // A record written before keys were normalized still matches until it ages out.
+  const legacy = new Store(null);
+  legacy.nonces.set(`base:${basePayment.payer.toLowerCase()}:0xnv2`, { first_seen: new Date().toISOString(), times_seen: 1, scan_id: "pre-deploy" });
+  const replayed = scan("outgoing", { payment: { ...basePayment, network: "base", nonce: "0xnv2" }, expected_price_usd: 0.01, context: { origin: "planning" } }, legacy);
+  check("a nonce recorded under the pre-normalization key still blocks", replayed.verdict === "block" && replayed.checks.find((c) => c.id === "replay.nonce_reuse")?.details?.first_scan_id === "pre-deploy", replayed.checks.filter((c) => c.verdict !== "allow"));
+}
 
 console.log("\n— overpayment —");
 {
@@ -261,14 +279,15 @@ console.log("\n— payment value resolution: decimals come from the server, not 
   });
   check("unknown asset with no declaration reads at 6 decimals, silently", hasCheck(undeclared, "overpay.clean") && !hasCheck(undeclared, "value.decimals_ignored"), undeclared.checks.filter((c) => c.verdict !== "allow"));
 
-  // x402 v1 network names are not in CANONICAL_USDC, so real Base USDC under
-  // "base" is an unknown asset to the server. The clamp covers it.
+  // x402 v1 network names resolve to CAIP-2, so real Base USDC under "base"
+  // is the server-known asset (6 decimals), not an unverifiable one.
   const v1Base = scan("outgoing", {
     payment: { ...basePayment, network: "base", asset: usdc, amount: "20000000", asset_decimals: 18, nonce: "0xdecb" },
     expected_price_usd: 0.01,
     context: { origin: "planning" },
   });
   check("v1 network name \"base\" + declared 18: still valued at 6 decimals, ceiling enforced", v1Base.verdict === "block" && hasCheck(v1Base, "overpay.absolute_cap") && hasCheck(v1Base, "value.decimals_ignored"), v1Base.checks.filter((c) => c.verdict !== "allow"));
+  check("…from the server's own table (value_source atomic_known), as under eip155:8453", v1Base.checks.find((c) => c.id === "value.decimals_ignored")?.details?.value_source === "atomic_known", v1Base.checks.find((c) => c.id === "value.decimals_ignored"));
 
   // The accepted cost, stated as a test: a GENUINE 18-decimal token the
   // server cannot verify is over-valued, so 0.01 of it reads as $10^10 and
@@ -882,6 +901,118 @@ console.log("\n— asset verification —");
   check("unknown network flagged", r.verdict === "flag" && hasCheck(r, "asset.unknown_network"));
 }
 
+console.log("\n— asset verification: x402 v1 network names resolve to CAIP-2 —");
+{
+  // Before 2026-10-02 a seller writing "base" in its 402 (paymentFromOffer
+  // copies it verbatim) turned the lookalike-token block into a low flag.
+  const lookalike = "0xDeaDDEaDdeadDEADdeadDEADdeadDEaDDeaDdEaD";
+  const assetVerdict = (network: string, asset: string, nonce: string) => {
+    const r = scan("outgoing", { payment: { ...basePayment, network, asset, nonce }, expected_price_usd: 0.01, context: { origin: "planning" } });
+    return { verdict: r.verdict, asset: r.checks.find((c) => c.id.startsWith("asset."))!, all: r.checks.filter((c) => c.verdict !== "allow") };
+  };
+
+  const caip = assetVerdict("eip155:8453", lookalike, "0xv1a");
+  const v1 = assetVerdict("base", lookalike, "0xv1b");
+  check("v1 \"base\" + lookalike token blocks exactly like eip155:8453", v1.verdict === "block" && v1.asset.id === "asset.not_canonical_usdc" && v1.asset.verdict === caip.asset.verdict && v1.asset.severity === caip.asset.severity && v1.asset.details?.expected === CANONICAL_USDC["eip155:8453"], v1.all);
+  check("…and the reason names the network as presented", v1.asset.reason.includes("on base"), v1.asset.reason);
+
+  const clean = assetVerdict("base", CANONICAL_USDC["eip155:8453"], "0xv1c");
+  check("v1 \"base\" + canonical Base USDC is clean", clean.verdict === "allow" && clean.asset.id === "asset.canonical", clean.all);
+
+  // Every v1 name for a chain with a canonical USDC entry, both directions.
+  const v1WithUsdc: Array<[string, string]> = [["ethereum", "eip155:1"], ["base", "eip155:8453"], ["base-sepolia", "eip155:84532"], ["polygon", "eip155:137"]];
+  const misses = v1WithUsdc.flatMap(([name, caip2], i) => {
+    const bad = assetVerdict(name, lookalike, `0xv1d${i}`);
+    const good = assetVerdict(name, CANONICAL_USDC[caip2], `0xv1e${i}`);
+    return bad.asset.id === "asset.not_canonical_usdc" && bad.verdict === "block" && good.asset.id === "asset.canonical" ? [] : [{ name, bad: bad.asset.id, good: good.asset.id }];
+  });
+  check("ethereum, base, base-sepolia and polygon each block a lookalike and pass their own USDC", misses.length === 0, misses);
+
+  // Case and stray whitespace do not reopen the downgrade.
+  const shouty = assetVerdict(" BASE ", lookalike, "0xv1f");
+  check("\" BASE \" + lookalike token still blocks", shouty.verdict === "block" && shouty.asset.id === "asset.not_canonical_usdc", shouty.all);
+
+  // Names with no canonical USDC entry keep the low unknown-network flag:
+  // "arbitrum" is not an x402 v1 name at all, "avalanche" is an EVM one with
+  // no entry, "solana" is a non-EVM v1 name, and "base-mainnet" is a near miss.
+  const stillUnknown = ["arbitrum", "avalanche", "base-mainnet", "solana"].map((n, i) => ({ n, a: assetVerdict(n, lookalike, `0xv1g${i}`).asset }));
+  check("unknown v1 names and near misses still flag asset.unknown_network (low)", stillUnknown.every(({ a }) => a.id === "asset.unknown_network" && a.verdict === "flag" && a.severity === "low"), stillUnknown);
+
+  // Plain-object keys used to resolve to prototype members and throw.
+  const protoKeys = ["constructor", "__proto__", "toString", "hasOwnProperty"].map((n, i) => {
+    try {
+      return { n, id: assetVerdict(n, lookalike, `0xv1h${i}`).asset.id };
+    } catch (e) {
+      return { n, id: `threw: ${(e as Error).message}` };
+    }
+  });
+  check("prototype-key networks flag unknown_network instead of throwing", protoKeys.every((p) => p.id === "asset.unknown_network"), protoKeys);
+  check("knownAssetDecimals and networkKey agree on prototype keys", knownAssetDecimals("constructor", lookalike) === null && networkKey("constructor") === "constructor" && canonicalUsdcFor("__proto__") === undefined);
+
+  // Resolution is lookup-only: the payment keeps "base", so the signed
+  // commitment is over the string as sent. The SDK offer mappers send
+  // eip155:<chainId> instead, the network the wallet signs (below).
+  const store = new Store(null);
+  const signer = new VerdictSigner(null);
+  const sent = { ...basePayment, network: "base", asset: CANONICAL_USDC["eip155:8453"], nonce: "0xv1i" };
+  const before = JSON.stringify(sent);
+  const res = handleScan("outgoing", { payment: sent, expected_price_usd: 0.01, context: { origin: "planning" } }, cfg, store, signer, undefined) as { body: any };
+  check("scan does not rewrite the presented network", JSON.stringify(sent) === before && res.body.verdict === "allow", res.body.checks?.filter((c: { verdict: string }) => c.verdict !== "allow"));
+  check("commitment hashes \"base\" as sent, not eip155:8453", res.body.attestation.payment_commitment === paymentCommitment(sent) && res.body.attestation.payment_commitment !== paymentCommitment({ ...sent, network: "eip155:8453" }));
+
+  // The copy is pinned to the installed x402 v1 client's own table, so a
+  // wrong chain id here fails loudly, and so does an upstream v1 name for a
+  // chain we hold canonical USDC for that we fail to alias.
+  const upstream = EVM_NETWORK_CHAIN_ID_MAP as Record<string, number>;
+  const wrong = Object.entries(X402_V1_NETWORKS).filter(([name, id]) => upstream[name] === undefined || `eip155:${upstream[name]}` !== id);
+  check("every alias matches @x402/evm's v1 EVM_NETWORK_CHAIN_ID_MAP", wrong.length === 0, wrong);
+  const unaliased = Object.entries(upstream).filter(([name, chain]) => Object.hasOwn(CANONICAL_USDC, `eip155:${chain}`) && X402_V1_NETWORKS[name] !== `eip155:${chain}`);
+  check("every upstream v1 name for a canonical-USDC chain is aliased", unaliased.length === 0, unaliased);
+
+  // The SDK side. guardSigner recomputes the commitment over
+  // eip155:<domain.chainId>, and the v1 client signs for the chainId its own
+  // table gives the name. So paymentFromOffer emits that CAIP-2 id, and the
+  // payment the wrapper scans, the approval it registers and the signed
+  // authorization all commit to one network. Before 2026-10-02 it copied
+  // "base" and the enforced path refused every v1 seller.
+  const sdkWrong = Object.entries(upstream).filter(([name, chain]) => paymentFromOffer({ network: name }, "https://seller.example/").network !== `eip155:${chain}`);
+  check("SDK paymentFromOffer maps every upstream v1 EVM name to the chain the v1 client signs for", sdkWrong.length === 0, sdkWrong);
+  const sdkVsServer = Object.entries(X402_V1_NETWORKS).filter(([name, id]) => paymentFromOffer({ network: name }, "https://seller.example/").network !== id);
+  check("…the same ids as the server's X402_V1_NETWORKS", sdkVsServer.length === 0, sdkVsServer);
+
+  const v1Offer = paymentFromOffer({ scheme: "exact", network: "base", maxAmountRequired: "10000", payTo: "0x" + "e".repeat(40), asset: CANONICAL_USDC["eip155:8453"], resource: "https://seller.example/v1", description: "Report" }, "https://seller.example/v1");
+  const v1SameAsPython = { scheme: "exact", network: "eip155:8453", asset: CANONICAL_USDC["eip155:8453"], amount: "10000", pay_to: "0x" + "e".repeat(40), resource_url: "https://seller.example/v1", description: "Report" };
+  const v1Defined = Object.fromEntries(Object.entries(v1Offer).filter(([, v]) => v !== undefined));
+  check("SDK paymentFromOffer maps a v1 \"base\" offer to eip155:8453 (same dict as Python's payment_from_offer)", JSON.stringify(Object.entries(v1Defined).sort()) === JSON.stringify(Object.entries(v1SameAsPython).sort()), v1Defined);
+
+  // End to end through the real scanner and the SDK enforcer. pre_sign
+  // because an offer has no nonce yet.
+  const v1Signer = new VerdictSigner(null);
+  const v1Pinned = (v1Signer.publicKeyInfo() as { public_key_spki_hex: string }).public_key_spki_hex;
+  const preSignScan = (payment: typeof v1Offer) => (handleScan("outgoing", { agent_id: "v1-e2e", payment, expected_price_usd: 0.01, context: { origin: "planning", phase: "pre_sign" } }, cfg, new Store(null), v1Signer, undefined) as { body: any }).body;
+  const baseAuthorization = (nonce: string) => ({
+    domain: { name: "USD Coin", version: "2", chainId: 8453, verifyingContract: v1Offer.asset },
+    primaryType: "TransferWithAuthorization",
+    message: { from: "0x" + "a".repeat(40), to: v1Offer.pay_to, value: v1Offer.amount, validAfter: 0, validBefore: 9999999999, nonce },
+  });
+  const v1Wallet = { signed: 0, async signTypedData() { this.signed++; return "0xsigned"; } };
+  const mappedEnforcer = new TollWardenEnforcer({ trustedKeyHex: v1Pinned });
+  const mappedScan = preSignScan(v1Offer);
+  mappedEnforcer.approve(mappedScan, v1Offer);
+  let v1Refusal: unknown = null;
+  try { await mappedEnforcer.guardSigner(v1Wallet).signTypedData(baseAuthorization("0xv1j")); } catch (e) { v1Refusal = e; }
+  check("real allow-verdict on the SDK-mapped v1 offer: an allow-only enforcer approves it and guardSigner signs the Base authorization", mappedScan.verdict === "allow" && v1Refusal === null && v1Wallet.signed === 1, { verdict: mappedScan.verdict, refusal: (v1Refusal as Error | null)?.message });
+
+  // The enforcer itself stays exact. Approving the raw "base" string (what
+  // the wrapper used to do) never matches a signed authorization.
+  const rawEnforcer = new TollWardenEnforcer({ trustedKeyHex: v1Pinned });
+  const rawOffer = { ...v1Offer, network: "base" };
+  rawEnforcer.approve(preSignScan(rawOffer), rawOffer);
+  v1Refusal = null;
+  try { await rawEnforcer.guardSigner(v1Wallet).signTypedData(baseAuthorization("0xv1k")); } catch (e) { v1Refusal = e; }
+  check("…whereas an approval over the raw \"base\" string is refused at sign time (fail-closed)", v1Refusal instanceof TollWardenEnforcementError && v1Wallet.signed === 1, (v1Refusal as Error | null)?.message);
+}
+
 console.log("\n— known-bad list —");
 {
   const store = new Store(null);
@@ -1040,6 +1171,75 @@ console.log("\n— velocity & policy limits —");
     context: { origin: "planning" },
   });
   check("unscoped velocity flagged", r.verdict === "flag" && hasCheck(r, "velocity.unscoped"));
+}
+
+console.log("\n— a blocked scan does not spend the hourly window —");
+{
+  // The SDK wrapper scans the amount from the seller's 402. A seller quoting
+  // an absurd amount is blocked at the absolute ceiling and nothing is paid,
+  // but if that refused value stayed in the buyer's hourly window, every later
+  // payment from the same agent, to anyone, would hit velocity.spend_cap for
+  // the next hour. A seller-chosen number would block third-party payments.
+  const absurd = paymentFromOffer({
+    scheme: "exact",
+    network: "eip155:8453",
+    maxAmountRequired: "1" + "0".repeat(30),
+    payTo: "0x" + "e".repeat(40),
+    asset: CANONICAL_USDC["eip155:8453"],
+    resource: "https://greedy-seller.example/report",
+    description: "Report",
+  }, "https://greedy-seller.example/report");
+
+  {
+    const store = new Store(null);
+    const refused = scan("outgoing", { agent_id: "buyer-agent", payment: absurd, context: { origin: "unknown" } }, store);
+    check("a 10^30 atomic quote from a seller's 402 blocks at the absolute ceiling", refused.verdict === "block" && hasCheck(refused, "overpay.absolute_cap"), refused.checks.filter((c) => c.verdict !== "allow"));
+    const window = store.velocity.get("buyer-agent") ?? [];
+    check("…and occupies a per-minute rate slot with zero spend", window.length === 1 && window[0].usd === 0, window);
+    const unrelated = scan("outgoing", { agent_id: "buyer-agent", payment: { ...basePayment, nonce: "0xbw1" }, expected_price_usd: 0.01, context: { origin: "planning" } }, store);
+    check("the same agent's normal $0.01 payment to a different pay_to is not spend-capped", unrelated.verdict === "allow" && !hasCheck(unrelated, "velocity.spend_cap"), unrelated.checks.filter((c) => c.verdict !== "allow"));
+  }
+
+  {
+    const store = new Store(null);
+    const key = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
+    const keyed = (req: ScanRequest) => (handleScan("outgoing", req, cfg, store, null, key) as { body: ScanResponse }).body;
+    const refused = keyed({ agent_id: "agent-x", payment: { ...absurd, nonce: "0xbw2" }, context: { origin: "unknown" } });
+    const next = keyed({ agent_id: "agent-y", payment: { ...basePayment, nonce: "0xbw3" }, expected_price_usd: 0.01, context: { origin: "planning" } });
+    check("same for an account behind an API key: the refused quote does not lock the account out", refused.verdict === "block" && next.verdict === "allow" && !hasCheck(next, "velocity.spend_cap"), next.checks.filter((c) => c.verdict !== "allow"));
+  }
+
+  {
+    // Fail-closed is unchanged for spend that could actually be paid. A loop
+    // of sub-ceiling payments trips the cap, a refused attempt neither eats
+    // nor frees headroom, and the cap stays shut once passed spend reaches it.
+    const store = new Store(null);
+    const pay = (usd: number, nonce: string) =>
+      scan("outgoing", { agent_id: "drain-agent", payment: { ...basePayment, amount: String(Math.round(usd * 1e6)), nonce }, context: { origin: "planning" } }, store);
+    const firstFour = [1, 2, 3, 4].map((i) => pay(1, `0xdl${i}`));
+    check("a drain loop's first four $1 payments pass", firstFour.every((r) => r.verdict !== "block"), firstFour.map((r) => r.checks.filter((c) => c.verdict !== "allow")));
+    const over = pay(3, "0xdl5");
+    check("a $3 payment that would take the hour to $7 is spend-capped", over.verdict === "block" && hasCheck(over, "velocity.spend_cap"), over.checks.filter((c) => c.verdict !== "allow"));
+    const fits = pay(1, "0xdl6");
+    check("the refused $3 ate no headroom, so $1 more (exactly the $5 cap) passes", fits.verdict !== "block" && !hasCheck(fits, "velocity.spend_cap"), fits.checks.filter((c) => c.verdict !== "allow"));
+    const shut = pay(0.01, "0xdl7");
+    check("once passed spend reaches the cap, $0.01 more is blocked", shut.verdict === "block" && hasCheck(shut, "velocity.spend_cap"), shut.checks.filter((c) => c.verdict !== "allow"));
+  }
+
+  {
+    // The per-minute rate is a count, and one scan is one count whatever it
+    // quotes, so refused scans keep counting toward it. A drain loop the
+    // ceiling refuses is still a drain loop.
+    const store = new Store(null);
+    let flagAt = 0;
+    let blockAt = 0;
+    for (let i = 1; i <= cfg.maxPaymentsPerMinute * 2; i++) {
+      const r = scan("outgoing", { agent_id: "loop-agent", payment: { ...absurd, nonce: `0xlr${i}` }, context: { origin: "unknown" } }, store);
+      if (!flagAt && hasCheck(r, "velocity.rate_flag")) flagAt = i;
+      if (!blockAt && hasCheck(r, "velocity.rate_block")) blockAt = i;
+    }
+    check("refused scans still count toward the per-minute rate (flag at N, block at 2N)", flagAt === cfg.maxPaymentsPerMinute && blockAt === cfg.maxPaymentsPerMinute * 2, { flagAt, blockAt });
+  }
 }
 
 console.log("\n— address poisoning —");
@@ -1659,6 +1859,29 @@ console.log("\n— offer drift: payment vs the offer it came from (N2/N3) —");
   check("settling on an unadvertised rail is flagged", strayRail.verdict !== "allow" && hasCheck(strayRail, "drift.no_matching_leg"), strayRail.checks.filter((c) => c.verdict !== "allow"));
   // A multi-leg mismatch reports once, as no_matching_leg, not twice.
   check("multi-leg mismatch does not double-report as network drift", !hasCheck(strayRail, "drift.network"), strayRail.checks.map((c) => c.id));
+
+  // One chain under its x402 v1 name and its CAIP-2 id is not rail drift.
+  const v1Offer = scan("outgoing", {
+    payment: { ...basePayment, scheme: "exact", network: "eip155:8453", amount: "10000", nonce: "0xn2v1" },
+    expected_price_usd: 0.01,
+    context: { origin: "planning", offer: offer({ ...base, network: "base" }) },
+  });
+  check("v1 \"base\" offer vs eip155:8453 payment is not network drift", hasCheck(v1Offer, "drift.clean") && !hasCheck(v1Offer, "drift.network"), v1Offer.checks.filter((c) => c.verdict !== "allow"));
+  // A multi-rail v1 offer is compared on the leg actually paid: matching the
+  // $0.001 "base" leg instead would report a 60x price drift.
+  const v1Legs = scan("outgoing", {
+    payment: { ...basePayment, scheme: "exact", network: "eip155:137", amount: "60000", nonce: "0xn2v2" },
+    expected_price_usd: 0.06,
+    context: { origin: "planning", offer: offer({ x402Version: 1, accepts: [{ ...base, network: "base", maxAmountRequired: "1000" }, { ...base, network: "polygon", maxAmountRequired: "60000" }] }) },
+  });
+  check("multi-rail v1 offer: an eip155:137 payment matches its \"polygon\" leg", hasCheck(v1Legs, "drift.clean") && !hasCheck(v1Legs, "drift.no_matching_leg") && !hasCheck(v1Legs, "drift.price"), v1Legs.checks.filter((c) => c.verdict !== "allow"));
+  const v1Drift = scan("outgoing", {
+    payment: { ...basePayment, scheme: "exact", network: "polygon", amount: "10000", nonce: "0xn2v3" },
+    expected_price_usd: 0.01,
+    context: { origin: "planning", offer: offer({ ...base, network: "base" }) },
+  });
+  const v1DriftCheck = v1Drift.checks.find((c) => c.id === "drift.network");
+  check("real drift between v1 names is still reported, with the names as presented", v1DriftCheck?.details?.offer_network === "base" && v1DriftCheck?.details?.payment_network === "polygon", v1Drift.checks.filter((c) => c.verdict !== "allow"));
 
   // Robustness: a prose or header-dump offer must not throw or fabricate drift.
   const prose = scan("outgoing", {

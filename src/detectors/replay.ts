@@ -3,10 +3,13 @@
 /**
  * Replay detection: tracks payment nonces and blocks reuse.
  * Key is scoped by network + payer (when known) so distinct payers with
- * coincidentally equal nonces don't collide.
+ * coincidentally equal nonces don't collide. The network part is networkKey,
+ * so one authorization presented under "base" and again under "eip155:8453"
+ * is the same nonce on the same chain.
  */
 import type { CheckResult, PaymentDetails } from "../types.ts";
 import type { Store } from "../store.ts";
+import { networkKey } from "./asset.ts";
 
 export function checkReplay(
   payment: PaymentDetails,
@@ -42,8 +45,13 @@ export function checkReplay(
   // Nonce TTL pruning runs on the Store's maintenance timer, not here, so the
   // hot path stays O(1) instead of O(nonces) per request (audit H-4).
   void ttlHours;
-  const key = `${payment.network ?? "?"}:${(payment.payer ?? "").toLowerCase()}:${payment.nonce}`;
-  const existing = store.nonces.get(key);
+  const payer = (payment.payer ?? "").toLowerCase();
+  const key = `${networkKey(payment.network) ?? "?"}:${payer}:${payment.nonce}`;
+  // Records written before network keys were normalized (2026-10-02) used the
+  // network string as presented. Honor them until they age out of the nonce
+  // TTL; this fallback can go once that deploy is older than NONCE_TTL_HOURS.
+  const legacyKey = `${payment.network ?? "?"}:${payer}:${payment.nonce}`;
+  const existing = store.nonces.get(key) ?? (legacyKey !== key ? store.nonces.get(legacyKey) : undefined);
 
   if (existing) {
     existing.times_seen += 1;

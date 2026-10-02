@@ -476,9 +476,9 @@ console.log("\n— wallet-side enforcement kit —");
 const PINNED = (signer.publicKeyInfo() as { public_key_spki_hex: string }).public_key_spki_hex;
 
 /** EIP-3009 typed data matching a PaymentDetails (what an x402 client asks the wallet to sign). */
-function typedDataFor(p: PaymentDetails): TypedDataLike {
+function typedDataFor(p: PaymentDetails, chainId = 8453): TypedDataLike {
   return {
-    domain: { name: "USD Coin", version: "2", chainId: 8453, verifyingContract: p.asset },
+    domain: { name: "USD Coin", version: "2", chainId, verifyingContract: p.asset },
     primaryType: "TransferWithAuthorization",
     types: {
       TransferWithAuthorization: [
@@ -843,6 +843,23 @@ const merchant = createServer((req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(402, { "content-type": "application/json" });
     return res.end(JSON.stringify({ error: "payment required" })); // no accepts[]
   }
+  if (u.pathname === "/v1seller") {
+    // An x402 v1 seller: the network is a v1 name, not a CAIP-2 id.
+    res.writeHead(402, { "content-type": "application/json" });
+    return res.end(JSON.stringify({
+      x402Version: 1,
+      accepts: [{
+        scheme: "exact",
+        network: "base",
+        maxAmountRequired: "10000",
+        payTo: "0xNiceMerchant00000000000000000000000000001",
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        resource: `http://localhost${u.pathname}`,
+        description: "Premium data",
+        extra: { name: "USD Coin", version: "2" },
+      }],
+    }));
+  }
   if (u.pathname === "/unlisted") {
     // A seller on a network the server has no USDC table for, declaring 18
     // decimals for a $20 (6-decimal) amount.
@@ -887,6 +904,16 @@ const payingFetch: typeof fetch = async (input, init) => {
   return fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string>), "x-payment": "mock-settled" } });
 };
 
+/** The chainId an x402 client signs for. A CAIP-2 id carries it; the v1
+ * client looks a v1 name up in its own table, exact match (getEvmChainIdV1 in
+ * @x402/evm). Only the v1 names these tests use. */
+function signingChainId(network: string): number {
+  if (network.startsWith("eip155:")) return Number(network.slice("eip155:".length));
+  const v1: Record<string, number> = { base: 8453, "base-sepolia": 84532 };
+  if (!Object.hasOwn(v1, network)) throw new Error(`Unsupported v1 network: ${network}`);
+  return v1[network]!;
+}
+
 /** A paying fetch that does what a real x402 client does: read the 402,
  * mint a fresh nonce, ask the (possibly guarded) signer for the EIP-3009
  * signature, then retry with the payment header. */
@@ -896,7 +923,7 @@ function signingPayingFetch(signer: TypedDataSigner): typeof fetch {
     if (probe.status !== 402) return probe;
     const body = (await probe.json()) as { accepts: Array<Record<string, string>> };
     const e = body.accepts[0]!;
-    await signer.signTypedData(typedDataFor({ network: e.network, asset: e.asset, pay_to: e.payTo, amount: e.maxAmountRequired, nonce: `0xmint${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}` }));
+    await signer.signTypedData(typedDataFor({ network: e.network, asset: e.asset, pay_to: e.payTo, amount: e.maxAmountRequired, nonce: `0xmint${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}` }, signingChainId(e.network)));
     payments++;
     return fetch(input, { ...init, headers: { ...(init?.headers as Record<string, string>), "x-payment": "mock-settled" } });
   }) as typeof fetch;
@@ -943,6 +970,22 @@ function signingPayingFetch(signer: TypedDataSigner): typeof fetch {
   threw = null;
   try { await flaggedFetch(`${MERCHANT}/paid?payto=0xIFFYshop`); } catch (e) { threw = e; }
   check("a flagged offer with an allow-only enforcer throws before the paying fetch runs", threw instanceof TollWardenEnforcementError && payments === 0 && w3.signed.length === 0);
+
+  // An x402 v1 seller writes "base" in its 402. The v1 client signs for
+  // chainId 8453 and guardSigner recomputes the commitment over eip155:8453,
+  // so the wrapper has to scan and approve the offer under that id. Before
+  // 2026-10-02 it approved "base" and refused every v1 seller.
+  const v1Enforcer = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+  const w4 = fakeSigner();
+  const v1Fetch = wrapFetchWithTollWarden(signingPayingFetch(v1Enforcer.guardSigner(w4)), new TollWardenClient({ baseUrl: BASE, agentId: "wrap-v1" }), { enforcer: v1Enforcer });
+  const scansBefore = seen.scans.length;
+  payments = 0;
+  threw = null;
+  let v1Res: Response | null = null;
+  try { v1Res = await v1Fetch(`${MERCHANT}/v1seller`); } catch (e) { threw = e; }
+  check("wrapper + enforcer + guardSigner sign a TransferWithAuthorization for an x402 v1 seller (\"base\", chainId 8453)", v1Res?.status === 200 && payments === 1 && w4.signed.length === 1 && w4.signed[0]?.primaryType === "TransferWithAuthorization" && w4.signed[0]?.domain?.chainId === 8453, { threw: (threw as Error | null)?.message, status: v1Res?.status, payments, signed: w4.signed.length });
+  const v1Networks = seen.scans.slice(scansBefore).map((s) => s.body.payment?.network);
+  check("…and both scans carried eip155:8453, the network that was signed", v1Networks.length === 2 && v1Networks.every((n) => n === "eip155:8453"), v1Networks);
 }
 
 {
@@ -979,6 +1022,45 @@ function signingPayingFetch(signer: TypedDataSigner): typeof fetch {
   const dropped = ['{"decimals":18.5}', '{"decimals":-1}', '{"decimals":37}', '{"decimals":true}', '{"decimals":"18"}', '{"decimals":null}', '{"decimals":1e400}', "{}"];
   check("paymentFromOffer forwards integer decimals 0..36", kept.every(([j, want]) => mappedFrom(j) === want), kept.map(([j]) => [j, mappedFrom(j)]));
   check("paymentFromOffer drops non-integer, out-of-range, boolean and string decimals", dropped.every((j) => mappedFrom(j) === undefined), dropped.map((j) => [j, mappedFrom(j)]));
+}
+{
+  // x402 v1 network names. The mapper emits the CAIP-2 id of the chain the v1
+  // client signs for, so the scanned payment, the approval and the commitment
+  // guardSigner recomputes all hash the same network. Python's
+  // payment_from_offer maps the identical list below (lockstep), and the
+  // server suite pins this mapping to @x402/evm's own v1 table.
+  const v1Entry = { scheme: "exact", network: "base", maxAmountRequired: "10000", payTo: "0x" + "e".repeat(40), asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", resource: "https://seller.example/v1", description: "Report" };
+  const mappedV1 = paymentFromOffer(v1Entry, "https://seller.example/v1");
+  check("paymentFromOffer maps a v1 \"base\" offer to network eip155:8453", mappedV1.network === "eip155:8453", mappedV1);
+  const sameAsPython = { scheme: "exact", network: "eip155:8453", asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount: "10000", pay_to: "0x" + "e".repeat(40), resource_url: "https://seller.example/v1", description: "Report" };
+  const definedV1 = Object.fromEntries(Object.entries(mappedV1).filter(([, v]) => v !== undefined));
+  check("…the same dict Python's payment_from_offer produces", JSON.stringify(Object.entries(definedV1).sort()) === JSON.stringify(Object.entries(sameAsPython).sort()), definedV1);
+
+  const v1Names: Array<[string, string]> = [
+    ["ethereum", "eip155:1"], ["sepolia", "eip155:11155111"], ["abstract", "eip155:2741"], ["abstract-testnet", "eip155:11124"],
+    ["base-sepolia", "eip155:84532"], ["base", "eip155:8453"], ["avalanche-fuji", "eip155:43113"], ["avalanche", "eip155:43114"],
+    ["iotex", "eip155:4689"], ["sei", "eip155:1329"], ["sei-testnet", "eip155:1328"], ["polygon", "eip155:137"],
+    ["polygon-amoy", "eip155:80002"], ["peaq", "eip155:3338"], ["story", "eip155:1514"], ["educhain", "eip155:41923"],
+    ["skale-base-sepolia", "eip155:324705682"], ["megaeth", "eip155:4326"], ["monad", "eip155:143"], ["stable", "eip155:988"],
+    ["stable-testnet", "eip155:2201"],
+  ];
+  const wrongV1 = v1Names.filter(([name, id]) => paymentFromOffer({ ...v1Entry, network: name }, "https://seller.example/v1").network !== id);
+  check("every x402 v1 EVM name maps to its CAIP-2 id", wrongV1.length === 0, wrongV1);
+  // Exact match only, like the v1 client's own lookup: a name it would not
+  // sign for is not given a chain here either.
+  const passThrough = ["eip155:8453", "eip155:999", "Base", "BASE", " base", "base ", "arbitrum", "base-mainnet", "solana", "solana-devnet", "constructor", "__proto__", "toString", "hasOwnProperty"];
+  const changed = passThrough.filter((n) => paymentFromOffer({ ...v1Entry, network: n }, "https://seller.example/v1").network !== n);
+  check("unknown names, near misses, other casing or whitespace, and prototype keys pass through unchanged", changed.length === 0, changed);
+
+  // The mapping names the one chain the v1 client signs for. An approval of
+  // the mapped "base" offer admits a Base signature and nothing else.
+  const v1Enforcer = new TollWardenEnforcer({ trustedKeyHex: PINNED });
+  v1Enforcer.approve(makeScan(mappedV1), mappedV1);
+  const w = fakeSigner();
+  let threw: unknown = null;
+  try { await v1Enforcer.guardSigner(w).signTypedData(typedDataFor({ ...mappedV1, nonce: "0xv1sep" }, 84532)); } catch (e) { threw = e; }
+  check("an approved v1 \"base\" offer does not admit the same transfer signed for chainId 84532", threw instanceof TollWardenEnforcementError && w.signed.length === 0);
+  check("…and admits it signed for chainId 8453", (await v1Enforcer.guardSigner(w).signTypedData(typedDataFor({ ...mappedV1, nonce: "0xv1base" }, 8453))) === "0xsigned" && w.signed.length === 1);
 }
 {
   // Block path: the paying fetch is NEVER invoked.

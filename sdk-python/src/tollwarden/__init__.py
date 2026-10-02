@@ -311,7 +311,15 @@ class TollWardenClient:
         self._explicit_origin = "user_instruction"
         self._observation = None
 
-    def _build_context(self, explicit: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    def _build_context(self, explicit: Optional[Dict[str, Any]], phase: Optional[str] = None) -> Dict[str, Any]:
+        # Phase says WHEN the scan runs, not where the decision came from, so
+        # it rides along with whichever provenance applies and never replaces it.
+        ctx = self._provenance_context(explicit)
+        if phase is not None:
+            ctx["phase"] = phase
+        return ctx
+
+    def _provenance_context(self, explicit: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if explicit is not None:
             return {"origin": explicit.get("origin", self.default_origin), **{k: v for k, v in explicit.items() if k != "origin"}}
         if self._explicit_origin:
@@ -382,6 +390,7 @@ class TollWardenClient:
         context: Optional[Dict[str, Any]],
         policy: Optional[Dict[str, Any]],
         agent_id: Optional[str],
+        phase: Optional[str] = None,
     ) -> Dict[str, Any]:
         try:
             self.ensure_api_key()
@@ -391,7 +400,7 @@ class TollWardenClient:
         body: Dict[str, Any] = {
             "agent_id": agent_id or self.agent_id,
             "payment": payment,
-            "context": self._build_context(context),
+            "context": self._build_context(context, phase),
         }
         if expected_price_usd is not None:
             body["expected_price_usd"] = expected_price_usd
@@ -415,9 +424,18 @@ class TollWardenClient:
         context: Optional[Dict[str, Any]] = None,
         policy: Optional[Dict[str, Any]] = None,
         agent_id: Optional[str] = None,
+        phase: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Scan a payment the agent is about to make. Never raises on flag/block."""
-        return self._scan("outgoing", payment, expected_price_usd, context, policy, agent_id)
+        """Scan a payment the agent is about to make. Never raises on flag/block.
+
+        phase: sent as ``context.phase`` ALONGSIDE whichever provenance
+        applies, so unlike ``context`` it keeps the automatic observation-based
+        tagging, and it wins over a ``phase`` key in ``context``. "pre_sign"
+        means the payment is not signed yet, so it has no nonce and the server
+        does not flag the missing one; a nonce that is present is
+        replay-checked either way. wrap_transport_with_tollwarden sets it.
+        """
+        return self._scan("outgoing", payment, expected_price_usd, context, policy, agent_id, phase)
 
     def scan_incoming(
         self,
@@ -426,19 +444,20 @@ class TollWardenClient:
         context: Optional[Dict[str, Any]] = None,
         policy: Optional[Dict[str, Any]] = None,
         agent_id: Optional[str] = None,
+        phase: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Scan a 402 offer / payment request the agent received."""
-        return self._scan("incoming", payment, expected_price_usd, context, policy, agent_id)
+        """Scan a 402 offer / payment request the agent received. phase: as in scan_outgoing."""
+        return self._scan("incoming", payment, expected_price_usd, context, policy, agent_id, phase)
 
     def guard_outgoing(self, payment: Dict[str, Any], strict: bool = False, **kwargs: Any) -> Dict[str, Any]:
         """Scan and RAISE TollWardenBlockedError on block (and on flag when strict)."""
-        scan = self._scan("outgoing", payment, kwargs.get("expected_price_usd"), kwargs.get("context"), kwargs.get("policy"), kwargs.get("agent_id"))
+        scan = self._scan("outgoing", payment, kwargs.get("expected_price_usd"), kwargs.get("context"), kwargs.get("policy"), kwargs.get("agent_id"), kwargs.get("phase"))
         if scan["verdict"] == "block" or (strict and scan["verdict"] == "flag"):
             raise TollWardenBlockedError(scan)
         return scan
 
     def guard_incoming(self, payment: Dict[str, Any], strict: bool = False, **kwargs: Any) -> Dict[str, Any]:
-        scan = self._scan("incoming", payment, kwargs.get("expected_price_usd"), kwargs.get("context"), kwargs.get("policy"), kwargs.get("agent_id"))
+        scan = self._scan("incoming", payment, kwargs.get("expected_price_usd"), kwargs.get("context"), kwargs.get("policy"), kwargs.get("agent_id"), kwargs.get("phase"))
         if scan["verdict"] == "block" or (strict and scan["verdict"] == "flag"):
             raise TollWardenBlockedError(scan)
         return scan

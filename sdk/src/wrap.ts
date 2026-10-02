@@ -28,6 +28,10 @@
  * the paying fetch is never invoked. Unparseable 402 offers fail CLOSED.
  * Non-402 responses pass through untouched with zero added latency.
  *
+ * Both scans send `context.phase: "pre_sign"`: they run before signing, and
+ * an offer has no nonce. Without it the server flags replay.no_nonce on every
+ * offer, and an allow-only enforcer refuses every payment.
+ *
  * With `enforcer` set, the wrapper also registers each passing outgoing
  * verdict with a TollWardenEnforcer, so a signer wrapped by
  * `enforcer.guardSigner()` inside the paying fetch will sign exactly the
@@ -40,6 +44,11 @@
  *     const account  = enforcer.guardSigner(privateKeyToAccount(KEY));
  *     const pay      = wrapFetchWithPayment(fetch, x402ClientFor(account));
  *     const fetchWithPay = wrapFetchWithTollWarden(pay, tollwarden, { enforcer });
+ *
+ * An allow-only enforcer approves only an allow verdict, so tag where the
+ * decision came from before the request (tollwarden.notePlanning(),
+ * noteUserInstruction() or observe()). An untagged scan flags
+ * injection.unknown_origin, and that flag is refused before anything is signed.
  */
 import { TollWardenBlockedError, TollWardenError, type TollWardenClient, type PaymentDetails, type ScanResponse } from "./index.ts";
 import type { TollWardenEnforcer } from "./enforce.ts";
@@ -69,7 +78,44 @@ export interface WrapFetchOptions {
 }
 
 /**
+ * x402 v1 EVM network names and the CAIP-2 ids for the same chains. The same
+ * table as the server's X402_V1_NETWORKS (src/detectors/asset.ts), copied from
+ * EVM_NETWORK_CHAIN_ID_MAP in @x402/evm, the v1 client's own name to chain-id
+ * table. Python's payment_from_offer carries the identical table.
+ */
+const X402_V1_NETWORKS: Readonly<Record<string, string>> = {
+  ethereum: "eip155:1",
+  sepolia: "eip155:11155111",
+  abstract: "eip155:2741",
+  "abstract-testnet": "eip155:11124",
+  "base-sepolia": "eip155:84532",
+  base: "eip155:8453",
+  "avalanche-fuji": "eip155:43113",
+  avalanche: "eip155:43114",
+  iotex: "eip155:4689",
+  sei: "eip155:1329",
+  "sei-testnet": "eip155:1328",
+  polygon: "eip155:137",
+  "polygon-amoy": "eip155:80002",
+  peaq: "eip155:3338",
+  story: "eip155:1514",
+  educhain: "eip155:41923",
+  "skale-base-sepolia": "eip155:324705682",
+  megaeth: "eip155:4326",
+  monad: "eip155:143",
+  stable: "eip155:988",
+  "stable-testnet": "eip155:2201",
+};
+
+/**
  * Defensive mapping from an x402 402 body's requirements entry to payment fields.
+ *
+ * `network` is emitted as the network that will be SIGNED. A v1 client signs
+ * EIP-3009 for the chainId its own table gives a v1 name (exact match), and
+ * guardSigner recomputes the commitment over `eip155:<chainId>`, so a v1 name
+ * becomes that CAIP-2 id here. The scanned payment, the enforcer's approval
+ * and the signed authorization then commit to the same network. Any other
+ * string passes through unchanged.
  *
  * `extra.decimals` is the SELLER's claim about its own token. It is forwarded
  * only as an integer in 0..36 (the range the server reads) so the server can
@@ -82,9 +128,10 @@ export function paymentFromOffer(entry: Record<string, unknown>, requestUrl: str
   const amount = s(entry.maxAmountRequired) ?? s(entry.amount) ?? (typeof entry.maxAmountRequired === "number" ? String(entry.maxAmountRequired) : undefined);
   const extra = (typeof entry.extra === "object" && entry.extra !== null ? entry.extra : {}) as Record<string, unknown>;
   const decimals = extra.decimals;
+  const network = s(entry.network);
   return {
     scheme: s(entry.scheme),
-    network: s(entry.network),
+    network: network !== undefined && Object.hasOwn(X402_V1_NETWORKS, network) ? X402_V1_NETWORKS[network] : network,
     asset: s(entry.asset),
     amount,
     asset_decimals: typeof decimals === "number" && Number.isInteger(decimals) && decimals >= 0 && decimals <= 36 ? decimals : undefined,
@@ -137,8 +184,9 @@ export function wrapFetchWithTollWarden(
     // 1) The payment we are about to authorize, as an OUTGOING payment.
     // This runs first because scans consume the client's provenance
     // observation — it must feed the outgoing (injection-provenance) scan,
-    // not be swallowed by the offer scan.
-    const outgoing = await tollwarden.scanOutgoing(offer, { expectedPriceUsd: expected });
+    // not be swallowed by the offer scan. `phase` rides alongside that
+    // provenance (see buildContext), it does not replace it.
+    const outgoing = await tollwarden.scanOutgoing(offer, { expectedPriceUsd: expected, phase: "pre_sign" });
     opts.onScan?.("outgoing", outgoing);
     if (outgoing.verdict === "block" || (opts.strict && outgoing.verdict === "flag")) {
       throw new TollWardenBlockedError(outgoing);
@@ -147,7 +195,7 @@ export function wrapFetchWithTollWarden(
     // 2) The 402 offer itself, as an INCOMING payment request (URL risk,
     // credential demands, asset verification, reputation).
     if (scanOffer) {
-      const incoming = await tollwarden.scanIncoming(offer, { expectedPriceUsd: expected });
+      const incoming = await tollwarden.scanIncoming(offer, { expectedPriceUsd: expected, phase: "pre_sign" });
       opts.onScan?.("incoming", incoming);
       if (incoming.verdict === "block" || (opts.strict && incoming.verdict === "flag")) {
         throw new TollWardenBlockedError(incoming);

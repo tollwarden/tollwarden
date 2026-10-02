@@ -27,7 +27,7 @@
  * Zero dependencies. Parse-only, no network, no state.
  */
 import type { CheckResult, PaymentDetails, ScanContext } from "../types.ts";
-import { knownAssetDecimals } from "./asset.ts";
+import { knownAssetDecimals, networkKey } from "./asset.ts";
 import { DEFAULT_DECIMALS, parseDeclaredDecimals, resolveValue } from "./overpayment.ts";
 
 /** Cap on offer parsing work — offers are small; a huge blob is not an offer. */
@@ -130,7 +130,8 @@ function candidateOffers(parsed: unknown): Array<Record<string, unknown>> {
  * Pick the leg the payment is actually settling. Prefer an exact
  * network+scheme match, then network, then the sole entry — so a multi-rail
  * offer is compared against the rail being paid rather than against its
- * cheapest advertised leg.
+ * cheapest advertised leg. Networks compare by networkKey, so a v1 "base" leg
+ * matches an "eip155:8453" payment.
  */
 function selectLeg(
   legs: Array<Record<string, unknown>>,
@@ -138,15 +139,15 @@ function selectLeg(
 ): { terms: OfferTerms | null; matched: boolean } {
   const all = legs.map(termsOf);
   if (all.length === 0) return { terms: null, matched: false };
-  const net = payment.network?.toLowerCase();
+  const net = networkKey(payment.network);
   const scheme = payment.scheme?.toLowerCase();
 
   if (net && scheme) {
-    const exact = all.find((t) => t.network === net && t.scheme === scheme);
+    const exact = all.find((t) => networkKey(t.network) === net && t.scheme === scheme);
     if (exact) return { terms: { ...exact, legs: all.length }, matched: true };
   }
   if (net) {
-    const byNet = all.find((t) => t.network === net);
+    const byNet = all.find((t) => networkKey(t.network) === net);
     if (byNet) return { terms: { ...byNet, legs: all.length }, matched: true };
   }
   // No leg matches the rail being paid. With a single-leg offer that is just
@@ -237,10 +238,12 @@ export function checkOfferDrift(
   }
 
   // 4. Rail drift: paying on a network or in an asset the offer did not name.
+  //    Compared by networkKey (one chain under its v1 name and its CAIP-2 id
+  //    is not drift); reported as presented.
   const paymentNetwork = payment.network?.toLowerCase();
   // Single-leg offers only: a multi-leg mismatch is already reported, and more
   // precisely, as drift.no_matching_leg above.
-  if (terms.network && paymentNetwork && terms.network !== paymentNetwork && (terms.legs ?? 1) === 1) {
+  if (terms.network && paymentNetwork && networkKey(terms.network) !== networkKey(paymentNetwork) && (terms.legs ?? 1) === 1) {
     results.push({
       id: "drift.network",
       name,
