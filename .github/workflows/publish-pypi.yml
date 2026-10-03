@@ -1,6 +1,10 @@
-# Publishes the PyPI packages via trusted publishing (OIDC — no tokens):
-#   - tollwarden       (sdk-python/: client SDK + enforcement kit + payment-path wrapper)
+# Publishes the PyPI integration packages via trusted publishing (OIDC — no tokens):
 #   - langchain-tollwarden  (integrations/langchain-tollwarden/: LangChain tools + provenance callback)
+#   - crewai-tollwarden, nemo-tollwarden, agentkit-tollwarden (integrations/*)
+#
+# The Python client SDK (tollwarden, sdk-python/) is NOT published from here:
+# it ships in lockstep with @tollwarden/client from publish-sdks.yml, so the
+# two SDKs can never drift apart again.
 #
 # Supply-chain hardening (see SECURITY-AUDIT-2.md):
 #  - every action pinned to a full commit SHA, not a movable tag
@@ -17,10 +21,10 @@ on:
   workflow_dispatch:
     inputs:
       package:
-        description: "Which package to publish"
+        description: "Which integration to publish (all = every integration; the client SDK ships from publish-sdks)"
         required: true
         type: choice
-        options: [sdk, langchain, crewai, nemo, agentkit, all]
+        options: [langchain, crewai, nemo, agentkit, all]
       bump:
         description: "Version bump from the registry's latest"
         required: false
@@ -32,53 +36,6 @@ permissions:
   contents: read
 
 jobs:
-  publish-sdk:
-    if: inputs.package == 'sdk' || inputs.package == 'all'
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      contents: write # push the released version back to the branch
-      id-token: write # required for PyPI trusted publishing (OIDC)
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12"
-      - name: Auto-bump to the next unpublished version
-        id: bump
-        run: node scripts/next-version.mjs python "${{ inputs.bump || 'patch' }}"
-      - name: Version gate (consistency + not-already-published)
-        run: node scripts/check-versions.mjs python --registry
-      - name: Run SDK tests
-        working-directory: sdk-python
-        run: |
-          python -m pip install cryptography
-          python tests/run_tests.py
-      - name: Build sdist + wheel
-        working-directory: sdk-python
-        run: |
-          python -m pip install build
-          python -m build
-      - name: Publish tollwarden to PyPI (OIDC)
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2 — twine 7, accepts Metadata-Version 2.5
-        with:
-          packages-dir: sdk-python/dist
-      - name: Record released version back to the repo
-        env:
-          BRANCH: ${{ github.ref_name }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add sdk-python/src/tollwarden/__init__.py
-          git diff --cached --quiet && exit 0
-          git commit -m "release(python-sdk): tollwarden v${{ steps.bump.outputs.version }}"
-          for i in 1 2 3 4 5; do
-            git push origin HEAD:"$BRANCH" && exit 0
-            git fetch origin "$BRANCH" && git rebase "origin/$BRANCH"
-            sleep $i
-          done
-          exit 1
-
   publish-langchain:
     if: inputs.package == 'langchain' || inputs.package == 'all'
     runs-on: ubuntu-latest

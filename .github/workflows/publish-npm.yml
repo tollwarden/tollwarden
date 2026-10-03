@@ -1,7 +1,22 @@
 # Publishes the npm packages via trusted publishing (OIDC — no tokens):
-#   - tollwarden         (repo root: server + MCP server, `npx tollwarden`)
-#   - @tollwarden/client  (sdk/: client SDK + wallet enforcement kit)
-#   - @tollwarden/ai-sdk       (integrations/ai-sdk/: Vercel AI SDK integration)
+#   - tollwarden          (repo root: server + MCP server, `npx tollwarden`)
+#                         + its MCP Registry listing (server.json), see below
+#   - @tollwarden/ai-sdk  (integrations/ai-sdk/: Vercel AI SDK integration)
+#
+# The client SDK (@tollwarden/client) is NOT published from here: it ships in
+# lockstep with the Python SDK from publish-sdks.yml, so the two can never
+# drift apart again.
+#
+# MCP Registry: once `tollwarden` is on npm and the version is recorded back to
+# the branch, the same job publishes server.json to
+# registry.modelcontextprotocol.io (.github/actions/publish-mcp-registry:
+# pinned mcp-publisher, checksum verified). Auth is DNS verification of
+# tollwarden.com — the Ed25519 private key behind the apex TXT record
+# (scripts/gen-mcp-dns-key.mjs) lives in the `npm` environment as the secret
+# MCP_PRIVATE_KEY, so it sits behind the same required-reviewer gate as the
+# publish itself. If that step fails after npm succeeded, fix the cause and
+# dispatch this workflow with package = mcp-registry: it re-publishes the
+# listing for the version already recorded in server.json, nothing else.
 #
 # Supply-chain hardening (same posture as publish-pypi.yml, SECURITY-AUDIT-2.md):
 #  - every action pinned to a full commit SHA, not a movable tag
@@ -19,12 +34,12 @@ on:
   workflow_dispatch:
     inputs:
       package:
-        description: "Which package to publish"
+        description: "Which package to publish (the client SDK ships from publish-sdks)"
         required: true
         type: choice
-        options: [sdk, server, ai-sdk, both]
+        options: [server, ai-sdk, mcp-registry]
       bump:
-        description: "Version bump from the registry's latest"
+        description: "Version bump from the registry's latest (ignored for mcp-registry)"
         required: false
         default: patch
         type: choice
@@ -34,53 +49,8 @@ permissions:
   contents: read
 
 jobs:
-  publish-sdk:
-    if: inputs.package == 'sdk' || inputs.package == 'both'
-    runs-on: ubuntu-latest
-    environment: npm
-    permissions:
-      contents: write # push the released version back to the branch
-      id-token: write # required for npm trusted publishing (OIDC)
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
-      - name: Upgrade npm (trusted publishing needs >= 11.5.1)
-        run: npm install -g npm@11 && npm --version
-      - name: Auto-bump to the next unpublished version
-        id: bump
-        run: node scripts/next-version.mjs sdk "${{ inputs.bump || 'patch' }}"
-      - name: Version gate (consistency + not-already-published + no downgrade)
-        run: node scripts/check-versions.mjs sdk --registry
-      - name: Install SDK dev dependencies
-        working-directory: sdk
-        run: npm ci
-      - name: Run SDK tests (cross-validated against the real server signer)
-        working-directory: sdk
-        run: npm test
-      - name: Publish @tollwarden/client (OIDC; prepublishOnly re-runs build+test)
-        working-directory: sdk
-        run: npm publish
-      - name: Record released version back to the repo
-        env:
-          BRANCH: ${{ github.ref_name }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add sdk/package.json
-          git diff --cached --quiet && exit 0
-          git commit -m "release(sdk): @tollwarden/client v${{ steps.bump.outputs.version }}"
-          for i in 1 2 3 4 5; do
-            git push origin HEAD:"$BRANCH" && exit 0
-            git fetch origin "$BRANCH" && git rebase "origin/$BRANCH"
-            sleep $i
-          done
-          exit 1
-
   publish-server:
-    if: inputs.package == 'server' || inputs.package == 'both'
+    if: inputs.package == 'server'
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -107,7 +77,13 @@ jobs:
         run: npm test
       - name: Publish tollwarden (OIDC)
         run: npm publish
+      # Recorded BEFORE the registry listing, so a listing that fails can be
+      # re-published from the committed server.json (package = mcp-registry).
+      # continue-on-error keeps the listing step running; the last step fails
+      # the job if this push did not land.
       - name: Record released version back to the repo
+        id: record
+        continue-on-error: true
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
@@ -122,6 +98,34 @@ jobs:
             sleep $i
           done
           exit 1
+      - name: Publish the MCP Registry listing (server.json)
+        uses: ./.github/actions/publish-mcp-registry
+        with:
+          private-key: ${{ secrets.MCP_PRIVATE_KEY }}
+      - name: Fail if the released version could not be recorded
+        if: steps.record.outcome == 'failure'
+        run: |
+          echo "::error::tollwarden v${{ steps.bump.outputs.version }} is on npm and in the MCP Registry, but the version bump could not be pushed to ${{ github.ref_name }}. Commit package.json + server.json at that version by hand."
+          exit 1
+
+  # Re-publish the MCP Registry listing for the version already recorded in
+  # server.json (which must already be on npm). For a listing that failed
+  # after a successful npm publish, or a manifest-only change.
+  publish-mcp-registry:
+    if: inputs.package == 'mcp-registry'
+    runs-on: ubuntu-latest
+    environment: npm # the DNS private key lives here, behind the same reviewer gate
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Version gate (package.json and server.json agree)
+        run: node scripts/check-versions.mjs server
+      - name: Publish the MCP Registry listing for the version in server.json
+        uses: ./.github/actions/publish-mcp-registry
+        with:
+          private-key: ${{ secrets.MCP_PRIVATE_KEY }}
 
   publish-ai-sdk:
     if: inputs.package == 'ai-sdk'

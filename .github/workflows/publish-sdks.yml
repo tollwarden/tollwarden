@@ -1,0 +1,157 @@
+# Publishes BOTH client SDKs at ONE version, in one run — never one without
+# the other:
+#   - @tollwarden/client  (sdk/, npm)
+#   - tollwarden          (sdk-python/, PyPI)
+#
+# Lockstep: `scripts/next-version.mjs sdks` reads both registries, bumps from
+# the HIGHER of the two latest releases, and the same number is applied to both
+# packages (a pair that drifted apart, e.g. 0.9.0 / 0.8.0, is re-aligned by its
+# next release). The `version` job also runs both SDK suites BEFORE either
+# publish, so a failure stops the release with nothing shipped. The publish
+# jobs take that one computed version as a job output (no artifacts) and each
+# sits behind its own protected environment (npm / pypi): approve both from the
+# run's "Review deployments" dialog. The released version is committed back
+# only once BOTH registries have it.
+#
+# If one registry fails after the other succeeded, fix the cause and use
+# "Re-run failed jobs" on the SAME run: the version is already fixed by the
+# `version` job, so only the failed side (and the record job) is retried.
+#
+# Supply-chain hardening (same posture as publish-npm.yml / publish-pypi.yml,
+# SECURITY-AUDIT-2.md):
+#  - every action pinned to a full commit SHA, not a movable tag
+#  - no artifact upload/download actions in the chain
+#  - least privilege: read-only default; id-token:write only on the publish
+#    jobs; contents:write only on the job that pushes the version-bump commit
+#  - trusted publishing (OIDC) on both registries — no tokens anywhere
+name: publish-sdks
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump from the higher of the two registries' latest"
+        required: false
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-sdks
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Compute the ONE version for both SDKs from both registries
+        id: next
+        run: node scripts/next-version.mjs sdks "${{ inputs.bump || 'patch' }}"
+      - name: Version gate (both files agree, unpublished on npm AND PyPI, no npm downgrade)
+        run: node scripts/check-versions.mjs sdks --registry
+      - name: TypeScript SDK tests (cross-validated against the real server signer)
+        working-directory: sdk
+        run: |
+          npm ci
+          npm test
+      - name: Python SDK tests
+        working-directory: sdk-python
+        run: |
+          python -m pip install cryptography
+          python tests/run_tests.py
+
+  publish-npm:
+    needs: version
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # required for npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - name: Upgrade npm (trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@11 && npm --version
+      - name: Apply the lockstep version
+        run: node scripts/set-version.mjs sdk "${{ needs.version.outputs.version }}"
+      - name: Version gate (not-already-published + no downgrade)
+        run: node scripts/check-versions.mjs sdk --registry
+      - name: Install SDK dev dependencies
+        working-directory: sdk
+        run: npm ci
+      - name: Publish @tollwarden/client (OIDC; prepublishOnly re-runs build+test)
+        working-directory: sdk
+        run: npm publish
+
+  publish-pypi:
+    needs: version
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write # required for PyPI trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Apply the lockstep version
+        run: node scripts/set-version.mjs python "${{ needs.version.outputs.version }}"
+      - name: Version gate (not-already-published)
+        run: node scripts/check-versions.mjs python --registry
+      - name: Build sdist + wheel
+        working-directory: sdk-python
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Publish tollwarden to PyPI (OIDC)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2 — twine 7, accepts Metadata-Version 2.5
+        with:
+          packages-dir: sdk-python/dist
+
+  record:
+    needs: [version, publish-npm, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the released version back to the branch
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Apply the released version to both SDKs
+        run: node scripts/set-version.mjs sdks "${{ needs.version.outputs.version }}"
+      - name: Record released version back to the repo (one commit for both)
+        env:
+          BRANCH: ${{ github.ref_name }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add sdk/package.json sdk-python/src/tollwarden/__init__.py
+          git diff --cached --quiet && exit 0
+          git commit -m "release(sdks): @tollwarden/client + tollwarden v${VERSION}"
+          for i in 1 2 3 4 5; do
+            git push origin HEAD:"$BRANCH" && exit 0
+            git fetch origin "$BRANCH" && git rebase "origin/$BRANCH"
+            sleep $i
+          done
+          exit 1

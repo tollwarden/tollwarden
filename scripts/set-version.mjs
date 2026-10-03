@@ -5,12 +5,14 @@
  * Bump a package's version in EVERY file that carries it, atomically.
  * The antidote to editing four files by hand and missing one.
  *
- * Usage: node scripts/set-version.mjs <server|sdk|python|langchain|...> <version>
+ * Usage: node scripts/set-version.mjs <server|sdk|python|sdks|langchain|...> <version>
  *   server    -> package.json + server.json (x2); runtime code reads the
  *                version from package.json via src/version.ts, nothing to edit
  *   sdk       -> sdk/package.json
  *   python    -> sdk-python __init__.py only (pyproject uses hatchling
  *                dynamic versioning)
+ *   sdks      -> sdk + python together: the two client SDKs ship at ONE
+ *                version (publish-sdks.yml), so stage them with this key
  *   langchain -> langchain-tollwarden pyproject.toml + __init__.py
  *
  * Verifies the result with scripts/check-versions.mjs semantics: after
@@ -24,7 +26,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const [, , pkg, version] = process.argv;
 
 if (!pkg || !version || !/^\d+\.\d+\.\d+$/.test(version)) {
-  console.error("Usage: node scripts/set-version.mjs <server|sdk|python|langchain> <x.y.z>");
+  console.error("Usage: node scripts/set-version.mjs <server|sdk|python|sdks|langchain|...> <x.y.z>");
   process.exit(2);
 }
 
@@ -45,6 +47,11 @@ const EDITS = {
   sdk: () => sub("sdk/package.json", /("version":\s*")[^"]+(")/, `$1${version}$2`),
   "ai-sdk": () => sub("integrations/ai-sdk/package.json", /("version":\s*")[^"]+(")/, `$1${version}$2`),
   python: () => sub("sdk-python/src/tollwarden/__init__.py", /(__version__ = ")[^"]+(")/, `$1${version}$2`),
+  /** Lockstep group (publish-sdks.yml): both client SDKs at one version. */
+  sdks: () => {
+    EDITS.sdk();
+    EDITS.python();
+  },
   langchain: () => {
     sub("integrations/langchain-tollwarden/pyproject.toml", /^(version = ")[^"]+(")/m, `$1${version}$2`);
     sub("integrations/langchain-tollwarden/src/langchain_tollwarden/__init__.py", /(__version__ = ")[^"]+(")/, `$1${version}$2`);

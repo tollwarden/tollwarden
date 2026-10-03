@@ -1,0 +1,95 @@
+# Publishes ./server.json (the MCP Registry manifest) to
+# registry.modelcontextprotocol.io for the `tollwarden` npm package.
+#
+# Auth is DNS verification of the domain apex: the Ed25519 private key whose
+# public half is in the `v=MCPv1; k=ed25519; p=...` TXT record on
+# tollwarden.com (scripts/gen-mcp-dns-key.mjs). It grants the com.tollwarden/*
+# namespace. GitHub's OIDC login only covers io.github.* names, so it does not
+# apply here.
+#
+# The registry validates the listed npm package (its package.json must carry
+# mcpName == server.json name) and rejects a version it already holds, so this
+# waits until npm serves the manifest's exact version before publishing.
+#
+# Posture: mcp-publisher is a pinned release whose archive is verified against
+# the sha256 from the registry's own release checksums (no `latest` download).
+name: Publish the MCP Registry listing
+description: Publish ./server.json to the MCP Registry with a pinned mcp-publisher, authenticated by DNS verification of the domain.
+
+inputs:
+  private-key:
+    description: Ed25519 private key (64 hex chars) matching the TXT record on the domain apex
+    required: true
+  domain:
+    description: Domain whose apex TXT record carries the matching public key
+    required: false
+    default: tollwarden.com
+
+runs:
+  using: composite
+  steps:
+    - name: Install mcp-publisher (pinned release, checksum verified)
+      shell: bash
+      env:
+        MCP_PUBLISHER_VERSION: "1.8.1"
+        # sha256 of mcp-publisher_linux_amd64.tar.gz from registry_1.8.1_checksums.txt
+        MCP_PUBLISHER_SHA256: "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc"
+      run: |
+        set -euo pipefail
+        curl -sSL --retry 3 -o mcp-publisher.tar.gz \
+          "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+        echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+        tar xzf mcp-publisher.tar.gz mcp-publisher
+        rm mcp-publisher.tar.gz
+        ./mcp-publisher --version
+
+    - name: Check the manifest and wait for its npm release
+      shell: bash
+      run: |
+        set -euo pipefail
+        name="$(node -p 'require("./server.json").name')"
+        mcp_name="$(node -p 'require("./package.json").mcpName')"
+        version="$(node -p 'require("./server.json").version')"
+        identifier="$(node -p 'require("./server.json").packages[0].identifier')"
+        pkg_version="$(node -p 'require("./server.json").packages[0].version')"
+        if [ "$name" != "$mcp_name" ]; then
+          echo "::error::server.json name ($name) != package.json mcpName ($mcp_name); the registry verifies ownership through mcpName"
+          exit 1
+        fi
+        if [ "$version" != "$pkg_version" ]; then
+          echo "::error::server.json version ($version) != packages[0].version ($pkg_version); run npm run build to sync"
+          exit 1
+        fi
+        # npm publish returns before the new version is served everywhere.
+        for i in $(seq 1 24); do
+          if npm view "${identifier}@${version}" version >/dev/null 2>&1; then
+            echo "npm serves ${identifier}@${version}"
+            exit 0
+          fi
+          echo "waiting for ${identifier}@${version} on npm ($i/24)"
+          sleep 5
+        done
+        echo "::error::${identifier}@${version} is not on npm; the registry would reject the listing"
+        exit 1
+
+    - name: Log in (DNS verification of the domain apex TXT record)
+      shell: bash
+      env:
+        MCP_PRIVATE_KEY: ${{ inputs.private-key }}
+        MCP_DOMAIN: ${{ inputs.domain }}
+      run: |
+        set -euo pipefail
+        if [ -z "${MCP_PRIVATE_KEY}" ]; then
+          echo "::error::MCP_PRIVATE_KEY is empty. Add the Ed25519 private key (hex) as a secret on the npm environment (scripts/gen-mcp-dns-key.mjs prints it)."
+          exit 1
+        fi
+        ./mcp-publisher login dns --domain "${MCP_DOMAIN}" --private-key "${MCP_PRIVATE_KEY}"
+
+    - name: Publish server.json
+      shell: bash
+      run: ./mcp-publisher publish server.json
+
+    - name: Log out (drop the registry token from the runner)
+      if: always()
+      shell: bash
+      run: ./mcp-publisher logout || true

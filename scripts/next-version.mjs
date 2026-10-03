@@ -7,14 +7,22 @@
  * Because the bump derives from what's actually published, a stale version in
  * git can never cause an "already published" publish failure again.
  *
- * Usage: node scripts/next-version.mjs <package> [patch|minor|major]
+ * Usage: node scripts/next-version.mjs <package|sdks> [patch|minor|major] [--dry-run]
  *   (packages are the same keys as check-versions.mjs / set-version.mjs)
+ *
+ * `sdks` is the LOCKSTEP group: @tollwarden/client (npm) and tollwarden (PyPI)
+ * ship at one version (publish-sdks.yml). The bump starts from the HIGHER of
+ * the two registries' latest releases, so a pair that drifted apart is
+ * re-aligned by its next release, and both files are rewritten together.
  *
  * Rules:
  *  - next = registry latest with the requested part bumped (default: patch)
  *  - if the repo carries a HIGHER, not-yet-published version, the repo wins —
- *    that's a deliberate manual bump (e.g. staging a 2.0.0), honor it
+ *    that's a deliberate manual bump (e.g. staging a 2.0.0), honor it. For
+ *    `sdks` both files must carry that same version; a stage on one side only
+ *    is an error, never a guess
  *  - never published at all -> keep the repo version (first release as-is)
+ *  - --dry-run prints the decision and writes nothing
  *
  * In GitHub Actions, writes `version=<x.y.z>` to $GITHUB_OUTPUT.
  */
@@ -44,9 +52,15 @@ const PACKAGES = {
   agentkit: { type: "pypi", name: "agentkit-tollwarden", current: () => initVersion("integrations/agentkit-tollwarden/src/agentkit_tollwarden/__init__.py") },
 };
 
-const [, , key, bumpKind = "patch"] = process.argv;
-if (!PACKAGES[key] || !["patch", "minor", "major"].includes(bumpKind)) {
-  console.error(`Usage: node scripts/next-version.mjs <${Object.keys(PACKAGES).join("|")}> [patch|minor|major]`);
+/** Groups released at ONE shared version (set-version.mjs knows the same keys). */
+const GROUPS = { sdks: ["sdk", "python"] };
+
+const [, , key, ...rest] = process.argv;
+const dryRun = rest.includes("--dry-run");
+const bumpKind = rest.find((a) => !a.startsWith("--")) ?? "patch";
+const members = GROUPS[key] ?? (PACKAGES[key] ? [key] : undefined);
+if (!members || !["patch", "minor", "major"].includes(bumpKind)) {
+  console.error(`Usage: node scripts/next-version.mjs <${[...Object.keys(PACKAGES), ...Object.keys(GROUPS)].join("|")}> [patch|minor|major] [--dry-run]`);
   process.exit(2);
 }
 
@@ -56,6 +70,7 @@ const cmp = (a, b) => {
   for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0);
   return 0;
 };
+const max = (vs) => vs.reduce((a, b) => (cmp(a, b) >= 0 ? a : b));
 const bump = (v, kind) => {
   const [maj, min, pat] = parse(v);
   if (kind === "major") return `${maj + 1}.0.0`;
@@ -76,27 +91,47 @@ async function published(reg) {
   return Object.keys((await res.json()).releases ?? {});
 }
 
-const reg = PACKAGES[key];
-const current = reg.current();
-const releases = (await published(reg)).filter((v) => /^\d+\.\d+\.\d+$/.test(v));
+// One entry per member: what the repo says and what the registry has.
+const state = [];
+for (const m of members) {
+  const reg = PACKAGES[m];
+  const releases = (await published(reg)).filter((v) => /^\d+\.\d+\.\d+$/.test(v));
+  state.push({ key: m, reg, current: reg.current(), releases, latest: releases.length ? max(releases) : null });
+}
+const label = state.map((s) => `${s.reg.name} (${s.reg.type}): repo ${s.current}, latest ${s.latest ?? "never published"}`).join("; ");
+const currents = [...new Set(state.map((s) => s.current))];
+const latests = state.map((s) => s.latest).filter((v) => v !== null);
+const latest = latests.length ? max(latests) : null;
+const publishedAnywhere = (v) => state.some((s) => s.releases.includes(v));
 
 let next;
-if (releases.length === 0) {
-  next = current; // first release: publish exactly what's in the repo
-  console.log(`${reg.name}: never published — keeping repo version ${current}`);
+if (latest === null) {
+  if (currents.length !== 1) {
+    console.error(`${key}: never published, and the repo versions disagree (${label}). Run: node scripts/set-version.mjs ${key} <x.y.z>`);
+    process.exit(1);
+  }
+  next = currents[0]; // first release: publish exactly what's in the repo
+  console.log(`${key}: never published — keeping repo version ${next}`);
 } else {
-  const latest = releases.reduce((a, b) => (cmp(a, b) >= 0 ? a : b));
   const candidate = bump(latest, bumpKind);
   // A repo version above the registry that isn't published is a deliberate
-  // manual bump (e.g. a staged minor/major) — honor it instead of the patch.
-  next = cmp(current, candidate) > 0 && !releases.includes(current) ? current : candidate;
-  console.log(`${reg.name}: registry latest ${latest} -> next ${next} (${bumpKind}${next === current && next !== candidate ? ", honoring repo version" : ""})`);
+  // manual bump (e.g. a staged minor/major) — honor it instead of the bump.
+  const staged = state.filter((s) => cmp(s.current, candidate) > 0 && !publishedAnywhere(s.current));
+  if (staged.length > 0 && currents.length !== 1) {
+    console.error(`${key}: a staged version is not carried by every member (${label}). Stage them together: node scripts/set-version.mjs ${key} <x.y.z>`);
+    process.exit(1);
+  }
+  next = staged.length > 0 ? currents[0] : candidate;
+  console.log(`${key}: registry latest ${latest} -> next ${next} (${bumpKind}${next !== candidate ? ", honoring repo version" : ""})`);
+  if (members.length > 1) console.log(`  ${label}`);
 }
 
-if (next !== current) {
-  execFileSync("node", [join(ROOT, "scripts", "set-version.mjs"), key, next], { stdio: "inherit" });
-} else {
+if (state.every((s) => s.current === next)) {
   console.log(`repo already at ${next}; nothing to rewrite`);
+} else if (dryRun) {
+  console.log(`dry run: would run set-version.mjs ${key} ${next}`);
+} else {
+  execFileSync("node", [join(ROOT, "scripts", "set-version.mjs"), key, next], { stdio: "inherit" });
 }
 
 if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `version=${next}\n`);

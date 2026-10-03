@@ -10,8 +10,11 @@
  * reported 1.1.0 for a day). This script makes those drifts loud and early.
  *
  * Usage:
- *   node scripts/check-versions.mjs <server|sdk|python|langchain|all>
+ *   node scripts/check-versions.mjs <server|sdk|python|sdks|langchain|all>
  *       Check that every file agrees on the version (offline, always safe).
+ *       `sdks` is the lockstep group (publish-sdks.yml): the TS and Python
+ *       client SDKs must carry ONE version, and the registry check below runs
+ *       against npm AND PyPI.
  *   node scripts/check-versions.mjs <package> --registry
  *       Also query npm/PyPI: FAIL if the version is already published, and
  *       (npm only) FAIL if it is lower than the current `latest` — publishing
@@ -92,6 +95,14 @@ const PACKAGES = {
   },
 };
 
+/** Lockstep group: the two client SDKs ship at ONE version (publish-sdks.yml).
+ * Consistency means both files agree with each other; with --registry the
+ * version must be unpublished on npm AND PyPI, and not an npm downgrade. */
+PACKAGES.sdks = {
+  registries: [PACKAGES.sdk.registry, PACKAGES.python.registry],
+  spots: () => ({ ...PACKAGES.sdk.spots(), ...PACKAGES.python.spots() }),
+};
+
 const semverCmp = (a, b) => {
   const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
   for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) - (pb[i] ?? 0);
@@ -117,7 +128,8 @@ async function checkPackage(key, withRegistry) {
   const pkg = PACKAGES[key];
   const spots = pkg.spots();
   const versions = new Set(Object.values(spots));
-  console.log(`\n${key} (${pkg.registry.type}: ${pkg.registry.name})`);
+  const registries = pkg.registries ?? [pkg.registry];
+  console.log(`\n${key} (${registries.map((r) => `${r.type}: ${r.name}`).join(", ")})`);
   for (const [where, v] of Object.entries(spots)) console.log(`  ${v}  ${where}`);
 
   const problems = [];
@@ -125,17 +137,20 @@ async function checkPackage(key, withRegistry) {
     problems.push(`INCONSISTENT: ${[...versions].join(" vs ")} — run: node scripts/set-version.mjs ${key} <version>`);
   } else if (withRegistry) {
     const v = [...versions][0];
-    const state = await registryState(pkg.registry);
-    if (state.published.includes(v)) {
-      problems.push(`ALREADY PUBLISHED: ${pkg.registry.name}@${v} exists on ${pkg.registry.type} — bump before publishing.`);
+    for (const registry of registries) {
+      const before = problems.length;
+      const state = await registryState(registry);
+      if (state.published.includes(v)) {
+        problems.push(`ALREADY PUBLISHED: ${registry.name}@${v} exists on ${registry.type} — bump before publishing.`);
+      }
+      if (registry.type === "npm" && state.latest && semverCmp(v, state.latest) < 0) {
+        problems.push(
+          `DOWNGRADE: ${v} < published latest ${state.latest} — npm's \`latest\` tag follows the most recent ` +
+            `publish, so this would silently downgrade every installer. Use a higher version.`,
+        );
+      }
+      if (problems.length === before) console.log(`  ✓ not yet on ${registry.type} (${registry.name} latest: ${state.latest ?? "none"}) — safe to publish`);
     }
-    if (pkg.registry.type === "npm" && state.latest && semverCmp(v, state.latest) < 0) {
-      problems.push(
-        `DOWNGRADE: ${v} < published latest ${state.latest} — npm's \`latest\` tag follows the most recent ` +
-          `publish, so this would silently downgrade every installer. Use a higher version.`,
-      );
-    }
-    if (!problems.length) console.log(`  ✓ not yet on ${pkg.registry.type} (latest: ${state.latest ?? "none"}) — safe to publish`);
   }
   for (const p of problems) console.error(`  ✗ ${p}`);
   return problems.length === 0;
@@ -143,7 +158,7 @@ async function checkPackage(key, withRegistry) {
 
 const target = process.argv[2];
 const withRegistry = process.argv.includes("--registry");
-const keys = target === "all" || !target ? Object.keys(PACKAGES) : [target];
+const keys = target === "all" || !target ? Object.keys(PACKAGES).filter((k) => k !== "sdks") : [target];
 if (keys.some((k) => !PACKAGES[k])) {
   console.error(`Unknown package "${target}". Valid: ${Object.keys(PACKAGES).join(", ")}, all`);
   process.exit(2);
