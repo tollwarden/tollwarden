@@ -585,10 +585,12 @@ ${detectorRows}
 <p>Every verdict is Ed25519-signed and bound to a hash of the exact payment, with a short expiry — plus signed evidence a wallet can weigh for itself: how long the merchant's payment address had been pinned at scan time, and which named out-of-band sources corroborated it. The SDKs ship an enforcement kit: <code>guardSigner(account)</code> wraps your wallet's signer so it <strong>physically refuses to sign</strong> an x402 payment authorization unless a fresh, verified allow-verdict exists for exactly that payment.</p>
 <p>A compromised agent that scanned payment A cannot sign payment B — and one that skips scanning cannot sign at all. Flagged payments can pause for one-click human approval instead — with your own decision latency, paired against how approved payments delivered, visible only to you.</p>
 </div>
-<pre><code>const guarded = TollWardenEnforcer.guardSigner(account, {
+<pre><code>const enforcer = new TollWardenEnforcer({
+  trustedKeyHex, // pinned verdict key
   allowedRecipients: ["0x2096…287C"],
   maxTotalAtomic: 5_000_000n
 });
+const guarded = enforcer.guardSigner(account);
 // unscanned payment → signature refused</code></pre>
 </div>
 
