@@ -16,6 +16,9 @@
     "TERMS.md",
     "PRIVACY.md",
     "og-image.png",
+    "icon.png",
+    "favicon.ico",
+    "apple-touch-icon.png",
     "server.json"
   ],
   "homepage": "https://tollwarden.com",

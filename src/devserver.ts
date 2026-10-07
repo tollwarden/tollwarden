@@ -33,7 +33,7 @@ import { dashboardHtml } from "./dashboard.ts";
 import { adminDashboardHtml } from "./admindash.ts";
 import { approvePageHtml } from "./approvepage.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, legacyHostRedirect, explicitlyWantsJson } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, legacyHostRedirect, explicitlyWantsJson, publicPageCsp } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
@@ -104,7 +104,7 @@ const server = createServer(async (req, res) => {
       if (home !== null && /text\/html/.test(req.headers.accept ?? "")) {
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+          "content-security-policy": publicPageCsp(cfg),
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
           "vary": "Accept",
@@ -136,6 +136,12 @@ const server = createServer(async (req, res) => {
     else if (method === "GET" && path === "/logo.svg") {
       res.writeHead(200, { "content-type": "image/svg+xml", "cache-control": "public, max-age=86400" });
       res.end(logoSvg());
+      return;
+    }
+    else if (method === "GET" && siteIcon(path) !== null) {
+      const icon = siteIcon(path)!;
+      res.writeHead(200, { "content-type": icon.type, "cache-control": "public, max-age=86400" });
+      res.end(icon.body);
       return;
     }
     else if (method === "GET" && path === "/og-image.png") {
@@ -173,13 +179,13 @@ const server = createServer(async (req, res) => {
       out = handlePlansCatalog(cfg);
     else if (method === "GET" && path === "/v1/usage")
       out = handleUsage(cfg, store, req.headers["x-api-key"] as string | undefined);
-    else if (method === "GET" && (path === "/terms" || path === "/privacy")) {
-      const html = path === "/terms" ? termsPageHtml(cfg) : privacyPageHtml(cfg);
+    else if (method === "GET" && (path === "/terms" || path === "/privacy" || path === "/contact")) {
+      const html = path === "/terms" ? termsPageHtml(cfg) : path === "/privacy" ? privacyPageHtml(cfg) : contactPageHtml(cfg);
       if (html === null) out = { status: 404, body: { error: "Document not available in this deployment" } };
       else {
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+          "content-security-policy": publicPageCsp(cfg),
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
           ...canonicalHeader(path),

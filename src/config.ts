@@ -21,6 +21,10 @@ export interface TollWardenConfig {
   nonceTtlHours: number;
   dataDir: string;
   publicBaseUrl: string;     // e.g. https://tollwarden.onrender.com
+  /** GA4 measurement ID for the public pages, behind an opt-in consent banner.
+   * Unset (the default) means no analytics, no banner, and no Google hosts in the
+   * CSP — self-hosted deployments must not report to the operator's property. */
+  gaMeasurementId: string | null;
 
   // --- zero-latency hardening tier ---
   /** Scans per agent per minute: flag at this rate, block at 2x */
@@ -133,6 +137,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     nonceTtlHours: num(env.NONCE_TTL_HOURS, 24),
     dataDir,
     publicBaseUrl: env.PUBLIC_BASE_URL ?? `http://localhost:${num(env.PORT, 4021)}`,
+    // Strict format check: the ID is interpolated into an inline script.
+    gaMeasurementId: /^G-[A-Z0-9]{4,20}$/.test((env.GA_MEASUREMENT_ID ?? "").trim()) ? env.GA_MEASUREMENT_ID!.trim() : null,
 
     maxPaymentsPerMinute: num(env.MAX_PAYMENTS_PER_MINUTE, 10),
     maxUsdPerHour: num(env.MAX_USD_PER_HOUR, 5),

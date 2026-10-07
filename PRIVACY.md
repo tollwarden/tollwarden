@@ -1,6 +1,6 @@
 # TollWarden — Privacy Policy
 
-**Last updated: 2026-09-27**
+**Last updated: 2026-10-01**
 
 This policy explains what data the TollWarden service ("the Service," "we," "us"), operated by **TollWarden, LLC**, a Colorado limited liability company, collects and how we handle it. It should be read alongside our [Terms of Use](TERMS.md).
 
@@ -12,6 +12,7 @@ TollWarden is an **advisory, non-custodial** payment-security scanner. It is des
 - Our tamper-evident audit log stores only a **cryptographic hash (SHA-256)** of each scanned payment plus a few non-sensitive transaction facts — **never** the plaintext `description`, `reason`, `metadata`, or `content` you submit.
 - To enforce limits and detect attacks, we keep pseudonymous history keyed to a **hash** of your API key: recent payment rates, the counterparties your account has paid, and the merchant addresses it has seen.
 - We **never** receive, store, or have access to private keys, wallet seed phrases, or funds. We are not a custodian or payment processor.
+- Our public web pages use Google Analytics **only if you accept** the cookie banner ([details](#website-analytics)). The dashboards, the approval page, and the API never load it.
 
 ## 2. What we collect and why
 
@@ -35,7 +36,19 @@ Most of what we keep is tied to your **account**: the SHA-256 hash of your API k
 
 We publish aggregate service statistics (total scans, verdict split, distinct agents, uptime). These are totals only, with no per-agent or per-payment data.
 
-We do **not** use tracking cookies, advertising networks, analytics pixels, or behavioral profiling.
+### Website analytics
+
+Our public web pages (the homepage, the Terms of Use, this Privacy Policy, and the contact page) can use **Google Analytics** to count visits and see how people find the site. It is **opt-in**:
+
+- **Nothing loads until you click Accept** on the cookie banner. Before that, no Google Analytics script is fetched and no analytics cookie is set.
+- **If you accept**, Google Analytics sets first-party cookies (`_ga` and `_ga_<ID>`, which expire after up to 2 years) and receives the page you viewed, the page that sent you there, your browser and device details, and your IP address, which Google uses to estimate your approximate location. Google states that Google Analytics 4 does not log or store IP addresses.
+- **Retention**: Google keeps this visit-level data for at most 14 months, the maximum for a standard Google Analytics account. Aggregated reports, which carry no cookie identifiers, may be kept longer.
+- **Advertising features stay off**: we never grant consent for ad storage, ad personalization, or ad data use, and the tag runs with Google signals and ad-personalization signals turned off.
+- **Your choice is stored in your browser's local storage**, not in a cookie, and is never sent to us. You can change it at any time with **Cookie settings** in the page footer. If you decline after accepting, Google Analytics is switched off and the page reloads without it, and its cookies are deleted.
+- **If your browser sends a Global Privacy Control signal**, we treat it as a decline, even if you accepted before turning the signal on, and we don't show the banner. You can still opt in with Cookie settings while the signal is on.
+- **Never on sensitive pages**: Google Analytics is not loaded on the usage dashboard, the owner dashboard, the approval page, or any API endpoint, so it never sees API keys, approval tokens, or payment data.
+
+We do **not** use advertising networks or behavioral profiling.
 
 ## 3. What we deliberately do NOT collect
 
@@ -43,7 +56,7 @@ The plaintext of the sensitive fields TollWarden exists to detect — API keys, 
 
 ## 4. Legal basis / how we use data
 
-We use the data above solely to (a) provide the scanning service you request, (b) detect and prevent abuse of the Service, and (c) keep an integrity-verifiable record of the decisions we rendered. We do **not** sell your data or share it for advertising.
+We use the data above solely to (a) provide the scanning service you request, (b) detect and prevent abuse of the Service, (c) keep an integrity-verifiable record of the decisions we rendered, and (d) only with your consent, measure visits to our public web pages ([website analytics](#website-analytics)). We do **not** sell your data or share it for advertising.
 
 ## 5. The reputation registry
 
@@ -58,6 +71,7 @@ We rely on a small number of service providers who may process data on our behal
 - **Render** (render.com) — application hosting and storage of the audit log/state. Render serves traffic through its CDN provider (Cloudflare).
 - **Coinbase Developer Platform (CDP)** — the x402 facilitator that verifies and settles payments. Note: the *payment itself* is initiated by your wallet and settles on-chain; TollWarden is advisory and does not route your funds. When the operator enables the merchant cross-check (`CDP_PIN_VERIFY=on`), we also ask CDP's public merchant index which resources a merchant's `pay_to` address serves. We send the **merchant's address only**, never yours, and no amounts, keys, or payload contents.
 - **Zoho** — business email for our contact addresses.
+- **Google Analytics** (Google LLC) — visit measurement on our public web pages, only for visitors who accept the cookie banner ([website analytics](#website-analytics)). Google may process this data in the United States and other countries; Google LLC is certified under the EU-U.S. Data Privacy Framework. Never on the dashboards, the approval page, or the API.
 - **ScoutScore** (scoutscore.ai) — optional external trust ratings for merchant domains (only when the operator enables `SCOUTSCORE=on`). When enabled, we query ScoutScore with the **resource domain only** (e.g. `api.example.com`) from scanned payments — never wallet addresses, amounts, API keys, payload contents, or your identity. Responses are cached server-side and surfaced in scan results as a clearly labeled third-party signal.
 
 If you configure a human-approval webhook, including a Slack webhook, we send each flagged payment's facts (listed in §2) to that destination on your instruction. What happens to them there is governed by that destination's operator.

@@ -57,7 +57,7 @@ import { approvePageHtml } from "./approvepage.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
 import { handleOutcomeReport } from "./outcomes.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, legacyHostRedirect, explicitlyWantsJson } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, SITE_ICONS, legacyHostRedirect, explicitlyWantsJson, publicPageCsp } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 
@@ -379,17 +379,15 @@ app.get("/.well-known/llms.txt", (_req, res) => {
   res.type("text/plain; charset=utf-8").send(llmsTxt(cfg));
 });
 
-// Legal pages, rendered from the canonical TERMS.md / PRIVACY.md. Static HTML
-// with no script at all, so the CSP here doesn't even allow inline script.
+// Public pages (/, /terms, /privacy, /contact). Static HTML; the only scripts
+// are the opt-in analytics snippets (when GA_MEASUREMENT_ID is set), which
+// publicPageCsp allows by hash.
 const htmlPage = (html: string | null, res: express.Response, path: string): void => {
   if (html === null) {
     res.status(404).json({ error: "Document not available in this deployment" });
     return;
   }
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-  );
+  res.setHeader("Content-Security-Policy", publicPageCsp(cfg));
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "no-referrer");
   const canonical = canonicalLinkHeader(cfg, path);
@@ -398,6 +396,7 @@ const htmlPage = (html: string | null, res: express.Response, path: string): voi
 };
 app.get("/terms", (_req, res) => htmlPage(termsPageHtml(cfg), res, "/terms"));
 app.get("/privacy", (_req, res) => htmlPage(privacyPageHtml(cfg), res, "/privacy"));
+app.get("/contact", (_req, res) => htmlPage(contactPageHtml(cfg), res, "/contact"));
 
 app.get("/robots.txt", (_req, res) => {
   res.type("text/plain; charset=utf-8").send(robotsTxt(cfg));
@@ -420,6 +419,19 @@ app.get("/logo.svg", (_req, res) => {
   res.setHeader("Cache-Control", "public, max-age=86400");
   res.type("image/svg+xml").send(logoSvg());
 });
+
+// Favicon, iOS home-screen icon and the 512px PNG (the SVG icon is /logo.svg).
+for (const path of Object.keys(SITE_ICONS)) {
+  app.get(path, (_req, res) => {
+    const icon = siteIcon(path);
+    if (icon === null) {
+      res.status(404).json({ error: "Image not available in this deployment" });
+      return;
+    }
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.type(icon.type).send(icon.body);
+  });
+}
 
 // Link-preview image referenced by og:image on the public pages.
 app.get("/og-image.png", (_req, res) => {

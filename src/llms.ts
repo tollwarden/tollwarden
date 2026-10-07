@@ -167,6 +167,7 @@ reports is always free.
 - Self-documenting JSON: ${base}/ (browsers get a human homepage; agents get JSON)
 - Terms of Use:  ${base}/terms
 - Privacy Policy: ${base}/privacy
+- Contact:       ${base}/contact (security reports: security@tollwarden.com)
 
 Source (source-available, BUSL 1.1): https://github.com/tollwarden/tollwarden
 `;

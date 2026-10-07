@@ -5,6 +5,7 @@
  *   node --experimental-strip-types test/run-tests.ts
  */
 import { createHash, createHmac, createPublicKey, verify as edVerify } from "node:crypto";
+import vm from "node:vm";
 import { runScan } from "../src/scanner.ts";
 import { APPROVAL_RING_MAX, Store, hashApiKey } from "../src/store.ts";
 import { loadConfig } from "../src/config.ts";
@@ -29,7 +30,7 @@ import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll, isPriv
 import { redactSecrets } from "../src/detectors/pii.ts";
 import { handleOutcomeReport } from "../src/outcomes.ts";
 import { approvePageHtml } from "../src/approvepage.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION, ogImagePng, legacyHostRedirect, explicitlyWantsJson } from "../src/pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION, ogImagePng, siteIcon, legacyHostRedirect, explicitlyWantsJson, publicPageCsp } from "../src/pages.ts";
 import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/manifest.ts";
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
@@ -3371,7 +3372,16 @@ console.log("\n— approve page HTML sanity —");
   check("approve page loads zero external resources", !/(?:src|href)\s*=\s*["']\s*(?:https?:)?\/\//i.test(html) && !html.includes("<link"));
 }
 
-console.log("\n— markdown pages (/, /terms, /privacy) —");
+// The only <link>/<img> tags the public pages may carry: same-origin icons.
+const ICON_TAGS = [
+  '<link rel="icon" href="/favicon.ico" sizes="32x32">',
+  '<link rel="icon" href="/logo.svg" type="image/svg+xml">',
+  '<link rel="apple-touch-icon" href="/apple-touch-icon.png">',
+  '<img src="/logo.svg" width="24" height="24" alt="">',
+];
+const withoutIcons = (h: string): string => ICON_TAGS.reduce((acc, t) => acc.split(t).join(""), h);
+
+console.log("\n— markdown pages (/, /terms, /privacy, /contact) —");
 {
   const home = homePageHtml(cfg);
   check("homepage renders from HOME.md", home !== null && home.includes("payment security firewall") && home.includes("non-custodial"));
@@ -3382,9 +3392,15 @@ console.log("\n— markdown pages (/, /terms, /privacy) —");
   const privacy = privacyPageHtml(cfg);
   check("terms page renders from TERMS.md", terms !== null && terms.includes("Terms of Use") && terms.includes("Business Source License"));
   check("privacy page renders from PRIVACY.md", privacy !== null && privacy.includes("Privacy Policy") && privacy.includes("non-custodial"));
-  const pages = [home ?? "", terms ?? "", privacy ?? ""];
-  check("legal pages contain no script and load zero external resources",
-    pages.every((h) => !h.includes("<script") && !h.includes("<link") && !h.includes("<img") && !h.includes("<iframe")));
+  const contact = contactPageHtml(cfg);
+  check("contact page lists every published address as a mailto link",
+    ["contact", "security", "abuse"].every((a) => contact.includes(`<a href="mailto:${a}@tollwarden.com">${a}@tollwarden.com</a>`)));
+  check("contact page links resolve to real privacy-policy anchors",
+    (privacy ?? "").includes('id="7-your-rights"') && contact.includes('href="/privacy#7-your-rights"') && contact.includes('href="/privacy#5-the-reputation-registry"'));
+  check("public pages link to /contact from the nav and footers", [home ?? "", terms ?? "", privacy ?? "", contact].every((h) => h.includes('href="/contact"')));
+  const pages = [home ?? "", terms ?? "", privacy ?? "", contact];
+  check("without a public origin, public pages contain no script and load nothing but same-origin icons",
+    pages.every((h) => !h.includes("<script") && !/<(?:link|img|iframe)\b/.test(withoutIcons(h))));
   check("markdown headings get GitHub-style anchor ids", (terms ?? "").includes('id="6a-intellectual-property"') && (privacy ?? "").includes('id="5-the-reputation-registry"'));
   check("repo-relative doc links are rewritten to site routes", (privacy ?? "").includes('href="/terms"') && !(privacy ?? "").includes("TERMS.md"));
   check("privacy retention table renders as a table", (privacy ?? "").includes("<table") && (privacy ?? "").includes("<th>Retention</th>"));
@@ -3393,10 +3409,10 @@ console.log("\n— markdown pages (/, /terms, /privacy) —");
   // widening this whitelist with the template's own tags (span/main/nav) and
   // thereby licensing those same tags to escape the renderer via TERMS.md or
   // PRIVACY.md. The homepage gets its own tag-set check below instead.
-  const rendered = [terms ?? "", privacy ?? ""];
-  check("markdown is HTML-escaped before inline markup", !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(rendered.join("")));
+  const rendered = [terms ?? "", privacy ?? "", contact];
+  check("markdown is HTML-escaped before inline markup", !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(rendered.join(""))));
   check("homepage markup stays inside the static template's tag set",
-    !/<(?!\/?(?:html|head|meta|title|style|body|div|main|nav|footer|span|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(home ?? ""));
+    !/<(?!\/?(?:html|head|meta|title|style|body|div|main|nav|footer|span|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(home ?? "")));
 }
 
 console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) —");
@@ -3406,13 +3422,14 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
   const home = homePageHtml(live)!;
   const terms = termsPageHtml(live)!;
   const privacy = privacyPageHtml(live)!;
+  const contact = contactPageHtml(live);
   check("every public page carries a description and Open Graph tags",
-    [home, terms, privacy].every((h) => h.includes('<meta name="description"') && h.includes('<meta property="og:title"') && h.includes('<meta name="twitter:card"')));
+    [home, terms, privacy, contact].every((h) => h.includes('<meta name="description"') && h.includes('<meta property="og:title"') && h.includes('<meta name="twitter:card"')));
   check("homepage description stays within the ~160-char snippet budget", HOME_DESCRIPTION.length <= 160);
   check("og:url is the page's canonical https URL (trailing slash on the base is normalized)",
     home.includes('content="https://tollwarden.com/"') && terms.includes('content="https://tollwarden.com/terms"'));
-  check("canonical travels as a Link header, so the pages keep zero <link> tags",
-    canonicalLinkHeader(live, "/privacy") === '<https://tollwarden.com/privacy>; rel="canonical"' && ![home, terms, privacy].some((h) => h.includes("<link")));
+  check("canonical travels as a Link header; the only <link> tags are same-origin icons",
+    canonicalLinkHeader(live, "/privacy") === '<https://tollwarden.com/privacy>; rel="canonical"' && ![home, terms, privacy, contact].some((h) => /<link\b/.test(withoutIcons(h))));
   check("no canonical or og:url without a public https origin (never point crawlers at localhost)",
     canonicalLinkHeader(local, "/") === null && !homePageHtml(local)!.includes("og:url") && !termsPageHtml(local)!.includes("og:url"));
   const robots = robotsTxt(live);
@@ -3423,7 +3440,8 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
   check("robots.txt omits the Sitemap line without a public origin", !robotsTxt(local).includes("Sitemap:"));
   const sitemap = sitemapXml(live);
   check("sitemap lists exactly the indexable pages",
-    (sitemap.match(/<loc>/g) ?? []).length === 3 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
+    (sitemap.match(/<loc>/g) ?? []).length === 4 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
+      && sitemap.includes("<loc>https://tollwarden.com/contact</loc>")
       && !sitemap.includes("/dashboard") && !sitemap.includes("/admin") && !sitemap.includes("/approve"));
   check("sitemap is an empty urlset without a public origin", !sitemapXml(local).includes("<loc>"));
   // Legacy-domain redirect: human pages move, machine traffic stays put.
@@ -3440,7 +3458,8 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
       && !explicitlyWantsJson("text/html, application/json"));
   check("legal pages redirect too, query string preserved, host case/port ignored",
     legacy({ path: "/terms", search: "?ref=x" }) === "https://tollwarden.com/terms?ref=x"
-      && legacy({ path: "/privacy", host: "WWW.PaySafe-Agent.com:443" }) === "https://tollwarden.com/privacy");
+      && legacy({ path: "/privacy", host: "WWW.PaySafe-Agent.com:443" }) === "https://tollwarden.com/privacy"
+      && legacy({ path: "/contact" }) === "https://tollwarden.com/contact");
   check("explicit-JSON index request on the old domain is served in place", legacy({ explicitJson: true }) === null);
   check("old-SDK traffic is never redirected: POST scans, .well-known, llms.txt, API",
     legacy({ method: "POST", path: "/v1/scan/outgoing" }) === null && legacy({ path: "/.well-known/erc8004.json" }) === null
@@ -3457,6 +3476,152 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
     [home, terms, privacy].every((h) => h.includes('<meta property="og:image" content="https://tollwarden.com/og-image.png">') && h.includes('content="summary_large_image"')));
   check("no og:image without a public origin (scrapers need an absolute URL)",
     !homePageHtml(local)!.includes("og:image") && homePageHtml(local)!.includes('<meta name="twitter:card" content="summary">'));
+  // Site icons: generated from icon.png, served same-origin, linked from every public page.
+  const ico = siteIcon("/favicon.ico");
+  const icoSizes = ico === null ? [] : Array.from({ length: ico.body.readUInt16LE(4) }, (_, i) => ico.body[6 + 16 * i] || 256);
+  check("favicon.ico holds 16, 32 and 48 px images (48 px is Google's search-favicon minimum)",
+    ico !== null && ico.type === "image/x-icon" && ico.body.readUInt16LE(2) === 1 && icoSizes.sort((a, b) => a - b).join() === "16,32,48");
+  const touch = siteIcon("/apple-touch-icon.png");
+  check("apple-touch-icon is an opaque 180×180 PNG (iOS renders transparency black)",
+    touch !== null && touch.type === "image/png" && touch.body.subarray(1, 4).toString("ascii") === "PNG"
+      && touch.body.readUInt32BE(16) === 180 && touch.body.readUInt32BE(20) === 180 && touch.body[25] === 2);
+  const png512 = siteIcon("/icon.png");
+  check("icon.png is served as the 512×512 source icon", png512 !== null && png512.body.readUInt32BE(16) === 512 && png512.body.readUInt32BE(20) === 512);
+  check("only listed icon paths are served (no prototype keys, no arbitrary files)",
+    siteIcon("/og-image.png") === null && siteIcon("/__proto__") === null && siteIcon("constructor") === null && siteIcon("/icon.svg") === null && siteIcon("/../package.json") === null);
+  check("every public page links the favicon, the SVG icon and the iOS icon",
+    [home, terms, privacy, contact].every((h) => ICON_TAGS.slice(0, 3).every((t) => h.includes(t))));
+  check("homepage nav shows the icon beside the wordmark", home.includes('<a class="brand" href="/"><img src="/logo.svg" width="24" height="24" alt="">TollWarden</a>'));
+  check("public-page CSP lets same-origin icons load, with or without analytics",
+    [publicPageCsp(live), publicPageCsp({ ...live, gaMeasurementId: "G-P108141G91" })].every((c) => /img-src 'self'[ ;]/.test(c)));
+  {
+    const { readFileSync } = await import("node:fs");
+    const art = (svg: string) => svg.replace(/\s(?:width|height)="\d+"/g, "").replace(/\s+/g, " ").trim();
+    check("/logo.svg serves the same artwork as icon.svg", art(logoSvg()) === art(readFileSync(new URL("../icon.svg", import.meta.url), "utf8")));
+  }
+  // Google Analytics: opt-in, public pages only, and only when the operator
+  // sets GA_MEASUREMENT_ID. The head snippet sits right after <head>; every
+  // inline snippet must be one the CSP pins by hash.
+  const devEnv = { TOLLWARDEN_MODE: "dev", PAY_TO: "0xtest" };
+  check("GA_MEASUREMENT_ID is off by default and strictly validated (it lands in an inline script)",
+    loadConfig(devEnv).gaMeasurementId === null
+      && loadConfig({ ...devEnv, GA_MEASUREMENT_ID: " G-P108141G91 " }).gaMeasurementId === "G-P108141G91"
+      && loadConfig({ ...devEnv, GA_MEASUREMENT_ID: "G-X1');alert(1)//" }).gaMeasurementId === null
+      && loadConfig({ ...devEnv, GA_MEASUREMENT_ID: "UA-12345-1" }).gaMeasurementId === null);
+  check("without GA_MEASUREMENT_ID, public pages carry no analytics and the CSP names no Google host (self-hosted deploys)",
+    [home, terms, privacy, contact].every((h) => !h.includes("<script") && !h.includes('id="consent"') && !h.includes('id="cookie-settings"'))
+      && publicPageCsp(live) === "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+  const liveGa = { ...live, gaMeasurementId: "G-P108141G91" };
+  const gaPages = [homePageHtml(liveGa)!, termsPageHtml(liveGa)!, privacyPageHtml(liveGa)!, contactPageHtml(liveGa)];
+  const gaCsp = publicPageCsp(liveGa);
+  check("every public page queues all-denied consent defaults immediately after <head>",
+    gaPages.every((h) => /<head>\n<!-- Google tag \(gtag\.js\)[^\n]*-->\n<script>\n  window\.dataLayer = window\.dataLayer \|\| \[\];/.test(h)
+      && ["ad_storage", "ad_user_data", "ad_personalization", "analytics_storage"].every((k) => h.includes(`'${k}': 'denied'`))));
+  check("nothing external loads before consent (gtag.js is injected only by the Accept path)",
+    gaPages.every((h) => !/\ssrc\s*=/i.test(withoutIcons(h)) && !/<(?:link|img|iframe)\b/.test(withoutIcons(h))
+      && h.includes("var ID = 'G-P108141G91';") && h.includes("s.src = 'https://www.googletagmanager.com/gtag/js?id=' + ID;")));
+  check("Google signals and ad-personalization signals are off in the tag config, not only by consent",
+    gaPages[0].includes("gtag('config', ID, { 'allow_google_signals': false, 'allow_ad_personalization_signals': false });"));
+  check("banner offers Accept and Decline with equal weight, hidden until the script decides",
+    gaPages.every((h) => h.includes('<div class="consent" id="consent" role="region" aria-label="Cookie consent" hidden>')
+      && h.includes('<button type="button" id="consent-decline">Decline</button><button type="button" id="consent-accept">Accept</button>')
+      && h.includes('<span id="cookie-settings" hidden> · <button type="button">Cookie settings</button></span></footer>')));
+  check("banner's Details link lands on the privacy policy's analytics section",
+    gaPages[2].includes('<h3 id="website-analytics">') && gaPages[0].includes('href="/privacy#website-analytics"'));
+  const inlineScripts = gaPages.flatMap((h) => [...h.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]));
+  check("analytics CSP allows exactly the inline snippets by hash, never 'unsafe-inline', and uses 'strict-dynamic'",
+    inlineScripts.length === 8 && inlineScripts.every((js) => gaCsp.includes(`'sha256-${createHash("sha256").update(js).digest("base64")}'`))
+      && (gaCsp.match(/'sha256-/g) ?? []).length === 2 && /script-src 'strict-dynamic' /.test(gaCsp)
+      && !/script-src[^;]*'unsafe-inline'/.test(gaCsp) && gaCsp.startsWith("default-src 'none'"));
+
+  // Run the page's own snippets against a fake DOM to check consent behavior.
+  const runConsent = (opts: { stored?: string | null; gpc?: boolean; cookies?: string[]; storageThrows?: boolean }) => {
+    const store = new Map<string, string>(opts.stored ? [["tollwarden-analytics-consent", opts.stored]] : []);
+    const el = () => {
+      const handlers: Record<string, () => void> = {};
+      const node: any = { hidden: true, addEventListener: (ev: string, fn: () => void) => { handlers[ev] = fn; }, click: () => handlers.click?.() };
+      node.querySelector = () => node.button ?? (node.button = el());
+      return node;
+    };
+    const els: Record<string, any> = { consent: el(), "cookie-settings": el(), "consent-accept": el(), "consent-decline": el() };
+    const injected: string[] = [];
+    const cleared: string[] = [];
+    const jar = new Set(opts.cookies ?? []);
+    let reloads = 0;
+    const document = {
+      getElementById: (id: string) => els[id],
+      createElement: () => ({}) as { src?: string },
+      head: { appendChild: (n: { src?: string }) => { injected.push(n.src ?? ""); } },
+      get cookie() { return [...jar].map((n) => `${n}=1`).join("; "); },
+      set cookie(v: string) { if (/Max-Age=0/.test(v)) { const n = v.split("=")[0]; jar.delete(n); cleared.push(v); } },
+    };
+    const localStorage = {
+      getItem: (k: string) => { if (opts.storageThrows) throw new Error("blocked"); return store.get(k) ?? null; },
+      setItem: (k: string, v: string) => { if (opts.storageThrows) throw new Error("blocked"); store.set(k, v); },
+    };
+    const sandbox: any = { document, localStorage, navigator: { globalPrivacyControl: opts.gpc ?? false }, location: { hostname: "www.tollwarden.com", reload: () => { reloads++; } }, Date };
+    sandbox.window = sandbox;
+    vm.createContext(sandbox);
+    for (const js of inlineScripts.slice(0, 2)) vm.runInContext(js, sandbox);
+    return {
+      els, injected, cleared, jar, store,
+      reloads: () => reloads,
+      disabled: () => sandbox["ga-disable-G-P108141G91"] === true,
+      // dataLayer as a readable event sequence, e.g. "consent:default,consent:update:granted,js,config"
+      order: () => sandbox.dataLayer.map((a: any) => a[0] === "consent" ? `consent:${a[1]}${a[1] === "update" ? ":" + a[2].analytics_storage : ""}` : a[0]).join(),
+    };
+  };
+  {
+    const fresh = runConsent({});
+    check("first visit: banner shows, gtag.js not fetched, only the denied default is queued",
+      !fresh.els.consent.hidden && fresh.injected.length === 0 && fresh.order() === "consent:default");
+    fresh.els["consent-accept"].click();
+    check("Accept: banner hides, choice saved, consent granted before js/config, gtag.js fetched",
+      fresh.els.consent.hidden && fresh.store.get("tollwarden-analytics-consent") === "granted"
+        && fresh.order() === "consent:default,consent:update:granted,js,config"
+        && fresh.injected.length === 1 && fresh.injected[0] === "https://www.googletagmanager.com/gtag/js?id=G-P108141G91");
+    fresh.els["cookie-settings"].querySelector("button").click();
+    fresh.els["consent-accept"].click();
+    check("accepting again never double-loads gtag.js or re-sends config",
+      fresh.injected.length === 1 && fresh.order() === "consent:default,consent:update:granted,js,config");
+    const back = runConsent({ stored: "granted" });
+    check("returning visitor who accepted: no banner, analytics loads", back.els.consent.hidden && back.injected.length === 1);
+    const declined = runConsent({ stored: "denied", cookies: ["_ga"] });
+    check("returning visitor who declined: no banner, nothing loads, stray GA cookies cleared",
+      declined.els.consent.hidden && declined.injected.length === 0 && declined.order() === "consent:default" && !declined.jar.has("_ga"));
+    const freshDecline = runConsent({});
+    freshDecline.els["consent-decline"].click();
+    check("Decline on a first visit saves the choice without reloading (nothing was loaded)",
+      freshDecline.store.get("tollwarden-analytics-consent") === "denied" && freshDecline.reloads() === 0 && freshDecline.injected.length === 0);
+    const withdraw = runConsent({ stored: "granted", cookies: ["_ga", "_ga_P108141G91", "other"] });
+    withdraw.els["cookie-settings"].querySelector("button").click();
+    withdraw.els["consent-decline"].click();
+    check("Decline after accepting disables the loaded tag and reloads without it, so no cookieless pings follow",
+      withdraw.disabled() && withdraw.reloads() === 1 && withdraw.order().endsWith(",consent:update:denied")
+        && withdraw.store.get("tollwarden-analytics-consent") === "denied");
+    check("Decline after accepting deletes only the GA cookies, on every parent domain",
+      !withdraw.jar.has("_ga") && !withdraw.jar.has("_ga_P108141G91") && withdraw.jar.has("other")
+        && withdraw.cleared.some((c) => c.endsWith("domain=tollwarden.com")) && withdraw.cleared.some((c) => c.endsWith("domain=www.tollwarden.com")));
+    const gpc = runConsent({ gpc: true });
+    check("Global Privacy Control counts as a decline: no banner, nothing loads", gpc.els.consent.hidden && gpc.injected.length === 0);
+    gpc.els["cookie-settings"].querySelector("button").click();
+    check("Cookie settings is revealed and reopens the banner", !gpc.els["cookie-settings"].hidden && !gpc.els.consent.hidden);
+    gpc.els["consent-accept"].click();
+    check("an explicit Accept under GPC is recorded as such and loads analytics",
+      gpc.store.get("tollwarden-analytics-consent") === "granted-gpc" && gpc.injected.length === 1);
+    const gpcOverride = runConsent({ gpc: true, stored: "granted", cookies: ["_ga"] });
+    check("GPC overrides an Accept given before it was turned on: nothing loads, GA cookies cleared",
+      gpcOverride.els.consent.hidden && gpcOverride.injected.length === 0 && !gpcOverride.jar.has("_ga"));
+    const gpcOptIn = runConsent({ gpc: true, stored: "granted-gpc" });
+    check("an Accept given while GPC was on keeps loading under GPC", gpcOptIn.injected.length === 1);
+    const blocked = runConsent({ storageThrows: true });
+    check("blocked storage never throws: banner still shows and nothing loads", !blocked.els.consent.hidden && blocked.injected.length === 0);
+  }
+  check("no Google tag without a public https origin, even with an ID set (local dev and tests send no hits)",
+    ![homePageHtml({ ...local, gaMeasurementId: "G-P108141G91" })!, termsPageHtml({ ...local, gaMeasurementId: "G-P108141G91" })!].some((h) => h.includes("googletagmanager") || h.includes("<script"))
+      && publicPageCsp({ ...local, gaMeasurementId: "G-P108141G91" }) === publicPageCsp(live));
+  check("dashboards and the approve page never carry the Google tag",
+    ![dashboardHtml(), adminDashboardHtml(), approvePageHtml()].some((h) => h.includes("googletagmanager") || h.includes("gtag(")));
 }
 
 console.log("\n— public stats + self-measured uptime (/, /v1/stats) —");
@@ -3532,8 +3697,8 @@ console.log("\n— public stats + self-measured uptime (/, /v1/stats) —");
   check("stats panel renders dashboard-style tiles and a proportional verdict bar",
     home.includes('<div class="n">12,000</div>') && home.includes('class="seg-allow" style="width:99.43%"')
       && home.includes('class="seg-flag" style="width:0.07%"') && home.includes('class="seg-block" style="width:0.50%"'));
-  check("homepage with stats is still scriptless static HTML",
-    !home.includes("<script") && !home.includes("<link") && !home.includes("<img") && !home.includes("<iframe"));
+  check("homepage with stats is still scriptless static HTML (no analytics configured)",
+    !home.includes("<script") && !/<(?:link|img|iframe)\b/.test(withoutIcons(home)));
   const bare = homePageHtml(cfg)!;
   check("homepage without a snapshot shows honest zeros, never fabricated numbers",
     bare.includes('<div class="n">0</div>') && bare.includes("n/a") && bare.includes("seg-empty") && !bare.includes("{{"));

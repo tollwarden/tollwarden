@@ -625,6 +625,7 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
         "GET /v1/stats": "Free. Public aggregate service stats with third-party and first-party (operator-owned) usage reported separately, so the operator's own agents never inflate the headline figures. Scan totals, verdict split, distinct agents, self-measured 90-day uptime. Cached ~5 min; aggregates only.",
         "GET /terms": "Free. Terms of Use (human-readable).",
         "GET /privacy": "Free. Privacy Policy (human-readable).",
+        "GET /contact": "Free. Contact addresses: general, security vulnerability reports, reputation disputes (human-readable).",
       },
       checks: [
         "pii: PII/secret detection on resource_url, description, reason, metadata",

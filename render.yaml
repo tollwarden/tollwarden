@@ -33,3 +33,5 @@ services:
         value: /data
       - key: PUBLIC_BASE_URL
         sync: false # e.g. https://tollwarden.onrender.com
+      - key: GA_MEASUREMENT_ID
+        sync: false # optional GA4 ID (G-...) for the public pages; leave blank when self-hosting

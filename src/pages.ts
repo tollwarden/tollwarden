@@ -5,7 +5,8 @@
  *
  * The legal pages (GET /terms, GET /privacy) are rendered from the canonical
  * TERMS.md / PRIVACY.md at the package root by the tiny markdown renderer
- * below (single source of truth: the same files GitHub renders).
+ * below (single source of truth: the same files GitHub renders). GET /contact
+ * goes through the same renderer from CONTACT_MD, which only the site uses.
  *
  * The homepage (GET / for browsers) is a dedicated server-rendered template
  * (homeBodyHtml) rather than rendered HOME.md: the proof-led layout — live
@@ -13,12 +14,16 @@
  * expressed in the mini markdown dialect. HOME.md remains the GitHub-facing
  * prose document; keep the two in sync when copy changes.
  *
- * Everything stays static HTML with no script and zero external resources,
- * under the same locked-down CSP as the dashboards. Pricing comes from
+ * Everything stays static HTML. The one exception is opt-in Google Analytics
+ * (analyticsFor), emitted only when GA_MEASUREMENT_ID is set on a real https
+ * deployment and allowed by publicPageCsp: its inline snippets are pinned by
+ * hash, and Google's hosts are the only external origins, contacted only after
+ * the visitor accepts. The dashboards and /approve never carry it. Pricing comes from
  * config and the plan catalog (plans.ts) so it can't drift from what the
  * payment gate actually charges; stats come from the TTL-cached public
  * snapshot (pubstats.ts), refreshed every five minutes.
  */
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -43,13 +48,41 @@ function loadDoc(filename: string): string | null {
   return loadFile(filename)?.toString("utf8") ?? null;
 }
 
-let ogImageCache: Buffer | null | undefined;
+const assetCache = new Map<string, Buffer | null>();
+
+/** A binary file at the package root, read once per process; null if absent. */
+function packageAsset(filename: string): Buffer | null {
+  if (!assetCache.has(filename)) assetCache.set(filename, loadFile(filename));
+  return assetCache.get(filename)!;
+}
 
 /** The 1200×630 link-preview image (og-image.png at the package root), or null if absent. */
 export function ogImagePng(): Buffer | null {
-  if (ogImageCache === undefined) ogImageCache = loadFile("og-image.png");
-  return ogImageCache;
+  return packageAsset("og-image.png");
 }
+
+/**
+ * Site icons at the package root, by URL path. All are generated from
+ * icon.png; the SVG icon is /logo.svg (manifest.ts), so it isn't listed here.
+ */
+export const SITE_ICONS: Readonly<Record<string, { file: string; type: string }>> = {
+  "/favicon.ico": { file: "favicon.ico", type: "image/x-icon" },                // 16, 32 and 48 px
+  "/apple-touch-icon.png": { file: "apple-touch-icon.png", type: "image/png" }, // 180 px, opaque
+  "/icon.png": { file: "icon.png", type: "image/png" },                         // 512 px
+};
+
+/** The bytes and media type for a SITE_ICONS path, or null if unknown or not shipped. */
+export function siteIcon(path: string): { body: Buffer; type: string } | null {
+  if (!Object.hasOwn(SITE_ICONS, path)) return null;
+  const icon = SITE_ICONS[path];
+  const body = packageAsset(icon.file);
+  return body === null ? null : { body, type: icon.type };
+}
+
+/** Head links for the icons above. Same-origin only, so nothing external loads. */
+const ICON_LINKS = `<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/logo.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">`;
 
 function escapeHtml(s: string): string {
   return s
@@ -61,13 +94,12 @@ function escapeHtml(s: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Search-engine metadata. Head tags only (meta, never <link> or <script>), so
-// the pages keep their zero-external-resource / no-script guarantees; the
-// canonical URL travels as an HTTP Link header instead (canonicalLinkHeader).
+// Search-engine metadata. Meta tags only; the canonical URL travels as an
+// HTTP Link header instead (canonicalLinkHeader).
 // ---------------------------------------------------------------------------
 
 /** Indexable public pages: sitemap entries and the canonical-URL allowlist. */
-export const INDEXABLE_PATHS = ["/", "/terms", "/privacy"] as const;
+export const INDEXABLE_PATHS = ["/", "/terms", "/privacy", "/contact"] as const;
 
 export const HOME_TITLE = "TollWarden — payment security firewall for AI agents";
 export const HOME_DESCRIPTION =
@@ -92,6 +124,148 @@ export function canonicalUrl(cfg: TollWardenConfig, path: string): string | null
 export function canonicalLinkHeader(cfg: TollWardenConfig, path: string): string | null {
   const url = canonicalUrl(cfg, path);
   return url === null ? null : `<${url}>; rel="canonical"`;
+}
+
+// ---------------------------------------------------------------------------
+// Google Analytics (GA4), opt-in, on the indexable public pages only, and only
+// when the operator sets GA_MEASUREMENT_ID (config.gaMeasurementId) on a real
+// https deployment. /dashboard, /admin and /approve never get it: they handle
+// API keys and one-time approval tokens, and keep their zero-external CSP.
+//
+// Consent is opt-in everywhere (Consent Mode "basic"): the head snippet only
+// queues consent defaults, all denied; gtag.js is not fetched and no cookie is
+// set until the visitor clicks Accept. The choice lives in localStorage (never
+// sent to us); "Cookie settings" in the footer reopens the banner. Declining
+// after accepting disables the tag and reloads without it, because a loaded
+// tag keeps sending cookieless pings under denied consent. Global Privacy
+// Control overrides an Accept given without it; an Accept given while GPC is
+// on ("granted-gpc") is the visitor's explicit opt-in and stands.
+// ---------------------------------------------------------------------------
+
+// Each snippet is exactly the text between <script> and </script>; the CSP
+// allows it by SHA-256, computed from the final text (after the ID is filled
+// in), so editing one changes its hash with it. No backticks inside.
+const GA_HEAD_SCRIPT = `
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('consent', 'default', {
+    'ad_storage': 'denied',
+    'ad_user_data': 'denied',
+    'ad_personalization': 'denied',
+    'analytics_storage': 'denied'
+  });
+`;
+
+const consentScript = (id: string): string => `
+(function () {
+  var ID = '${id}';
+  var KEY = 'tollwarden-analytics-consent';
+  var gpc = !!navigator.globalPrivacyControl;
+  var banner = document.getElementById('consent');
+  var settings = document.getElementById('cookie-settings');
+  var loaded = false;
+  function read() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
+  function write(v) { try { localStorage.setItem(KEY, v); } catch (e) {} }
+  function grant() {
+    if (loaded) return;
+    loaded = true;
+    gtag('consent', 'update', { 'analytics_storage': 'granted' });
+    gtag('js', new Date());
+    gtag('config', ID, { 'allow_google_signals': false, 'allow_ad_personalization_signals': false });
+    var s = document.createElement('script');
+    s.async = true;
+    s.src = 'https://www.googletagmanager.com/gtag/js?id=' + ID;
+    document.head.appendChild(s);
+  }
+  function clearCookies() {
+    var parts = location.hostname.split('.');
+    document.cookie.split(';').forEach(function (c) {
+      var name = c.split('=')[0].trim();
+      if (name !== '_ga' && name.indexOf('_ga_') !== 0) return;
+      document.cookie = name + '=; Max-Age=0; path=/';
+      for (var i = 0; i < parts.length - 1; i++) {
+        document.cookie = name + '=; Max-Age=0; path=/; domain=' + parts.slice(i).join('.');
+      }
+    });
+  }
+  function choose(v) {
+    write(v === 'granted' && gpc ? 'granted-gpc' : v);
+    banner.hidden = true;
+    if (v === 'granted') { grant(); return; }
+    clearCookies();
+    if (loaded) {
+      window['ga-disable-' + ID] = true;
+      gtag('consent', 'update', { 'analytics_storage': 'denied' });
+      location.reload();
+    }
+  }
+  document.getElementById('consent-accept').addEventListener('click', function () { choose('granted'); });
+  document.getElementById('consent-decline').addEventListener('click', function () { choose('denied'); });
+  settings.hidden = false;
+  settings.querySelector('button').addEventListener('click', function () { banner.hidden = false; });
+  var choice = read();
+  if (choice === 'granted-gpc' || (choice === 'granted' && !gpc)) { grant(); return; }
+  clearCookies();
+  if (choice !== 'denied' && !gpc) banner.hidden = false;
+})();
+`;
+
+interface Analytics {
+  head: string;     // immediately after <head>
+  banner: string;   // just before </body>, after the elements its script wires up
+  settings: string; // footer control that reopens the banner (revealed by the script)
+  csp: string;
+}
+
+const scriptHash = (js: string): string => `'sha256-${createHash("sha256").update(js).digest("base64")}'`;
+
+const CSP_TAIL = ["style-src 'unsafe-inline'", "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"];
+
+const analyticsCache = new Map<string, Analytics>();
+
+function analyticsFor(cfg: TollWardenConfig): Analytics | null {
+  const id = cfg.gaMeasurementId;
+  if (id === null || canonicalOrigin(cfg) === null) return null; // never report hits from local dev
+  let a = analyticsCache.get(id);
+  if (a === undefined) {
+    const consent = consentScript(id);
+    a = {
+      head: `<!-- Google tag (gtag.js): consent defaults only; gtag.js loads after Accept -->
+<script>${GA_HEAD_SCRIPT}</script>
+`,
+      banner: `<div class="consent" id="consent" role="region" aria-label="Cookie consent" hidden>
+<p>We'd like to use Google Analytics cookies to count visits and see how people find TollWarden. Nothing loads unless you accept. <a href="/privacy#website-analytics">Details</a></p>
+<div class="consent-actions"><button type="button" id="consent-decline">Decline</button><button type="button" id="consent-accept">Accept</button></div>
+</div>
+<script>${consent}</script>
+`,
+      settings: `<span id="cookie-settings" hidden> · <button type="button">Cookie settings</button></span>`,
+      // 'strict-dynamic' trusts gtag.js because the hashed consent script
+      // inserts it, and makes CSP3 browsers ignore the host allowlist, so an
+      // injected tag for some other GTM container would not run. Older
+      // browsers ignore 'strict-dynamic' and fall back to the hashes + host.
+      csp: [
+        "default-src 'none'",
+        `script-src 'strict-dynamic' ${scriptHash(GA_HEAD_SCRIPT)} ${scriptHash(consent)} https://*.googletagmanager.com`,
+        "img-src 'self' https://*.google-analytics.com https://*.googletagmanager.com",
+        "connect-src https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com",
+        ...CSP_TAIL,
+      ].join("; "),
+    };
+    analyticsCache.set(id, a);
+  }
+  return a;
+}
+
+/**
+ * CSP for the indexable public pages (/, /terms, /privacy, /contact). Without
+ * analytics: no script at all, images from this origin only (the icons). With
+ * analytics: inline script only for the two snippets above, by hash (never
+ * 'unsafe-inline'), and Google's tag and collection hosts, which the browser
+ * contacts only after consent.
+ */
+export function publicPageCsp(cfg: TollWardenConfig): string {
+  return analyticsFor(cfg)?.csp ?? ["default-src 'none'", "img-src 'self'", ...CSP_TAIL].join("; ");
 }
 
 function seoMeta(cfg: TollWardenConfig, title: string, description: string, path: string): string {
@@ -325,15 +499,23 @@ const BASE_CSS = `
   th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
   th { background:var(--card); }
   footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px; }
-  footer a { color:var(--muted); }`;
+  footer a { color:var(--muted); }
+  footer button { background:none; border:0; padding:0; color:var(--muted); font:inherit; text-decoration:underline; cursor:pointer; }
+  .consent { position:fixed; left:16px; right:16px; bottom:16px; max-width:640px; margin:0 auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; box-shadow:0 8px 30px rgba(0,0,0,.45); z-index:10; font-size:14px; line-height:1.5; }
+  .consent p { margin:0 0 12px; }
+  .consent-actions { display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap; }
+  .consent-actions button { padding:9px 18px; border-radius:8px; border:1px solid var(--line); background:var(--inset); color:var(--fg); font:inherit; font-weight:600; cursor:pointer; }
+  .consent-actions button:hover { border-color:var(--accent); }
+  [hidden] { display:none !important; }`;
 
 function markdownPageHtml(cfg: TollWardenConfig, title: string, description: string, path: string, markdown: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
+${analyticsFor(cfg)?.head ?? ""}<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
+${ICON_LINKS}
 ${seoMeta(cfg, title, description, path)}
 <style>
 ${BASE_CSS}
@@ -343,14 +525,15 @@ ${BASE_CSS}
 <body>
 <div class="wrap">
 ${renderMarkdown(markdown)}
-<footer><a href="/">TollWarden</a> · <a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy Policy</a> · <a href="https://github.com/tollwarden/tollwarden">Source</a></footer>
+<footer><a href="/">TollWarden</a> · <a href="/contact">Contact</a> · <a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy Policy</a> · <a href="https://github.com/tollwarden/tollwarden">Source</a>${analyticsFor(cfg)?.settings ?? ""}</footer>
 </div>
-</body>
+${analyticsFor(cfg)?.banner ?? ""}</body>
 </html>`;
 }
 
-// Rendered once per process; keyed by base URL because the page embeds it.
+// Rendered once per process; keyed by everything from config the page embeds.
 const legalCache = new Map<string, string | null>();
+const pageKey = (cfg: TollWardenConfig, path: string): string => `${path}|${cfg.publicBaseUrl}|${cfg.gaMeasurementId ?? ""}`;
 
 function fmtInt(n: number): string {
   return n.toLocaleString("en-US");
@@ -365,6 +548,7 @@ ${BASE_CSS}
   .navbar { border-bottom:1px solid var(--line); }
   .navin { max-width:840px; margin:0 auto; padding:14px 20px; display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; }
   .navin .brand { color:var(--fg); font-weight:600; font-size:16px; text-decoration:none; }
+  .navin .brand img { vertical-align:-6px; margin-right:9px; }
   .navin nav { display:flex; gap:20px; font-size:14px; flex-wrap:wrap; }
   .navin nav a { color:var(--muted); text-decoration:none; }
   .navin nav a:hover { text-decoration:underline; }
@@ -537,8 +721,8 @@ function homeBodyHtml(cfg: TollWardenConfig, stats?: PublicStats | null): string
       `<div class="row"><span>${escapeHtml(p.name)}</span><span class="mono">${escapeHtml(p.price)} / 30d</span><span class="mono">${escapeHtml(p.limits.price_per_scan)}</span><span class="muted">${p.name === "Pro" ? "6× velocity, deep analysis always on" : "hard-ceiling limits"}</span></div>`,
   ).join("\n");
   return `<div class="navbar"><div class="navin">
-<a class="brand" href="/">TollWarden</a>
-<nav><a href="#what-a-scan-catches">detectors</a><a href="#get-started">get started</a><a href="#pricing">pricing</a><a href="/dashboard">dashboard</a><a href="https://github.com/tollwarden/tollwarden">GitHub</a></nav>
+<a class="brand" href="/"><img src="/logo.svg" width="24" height="24" alt="">TollWarden</a>
+<nav><a href="#what-a-scan-catches">detectors</a><a href="#get-started">get started</a><a href="#pricing">pricing</a><a href="/dashboard">dashboard</a><a href="/contact">contact</a><a href="https://github.com/tollwarden/tollwarden">GitHub</a></nav>
 </div></div>
 <main>
 ${heroStatsHtml(stats)}
@@ -629,25 +813,25 @@ ${planRows}
 <li><a href="https://github.com/tollwarden/tollwarden">Source</a> — source-available under BUSL 1.1</li>
 <li><a href="/.well-known/tollwarden-verdict-key">Verdict signing key</a> — pin it and verify everything</li>
 </ul>
-<footer>Operated by <strong>TollWarden, LLC</strong> (Colorado, USA) · <a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy Policy</a> · <a href="https://github.com/tollwarden/tollwarden">Source</a> · contact@tollwarden.com</footer>
+<footer>Operated by <strong>TollWarden, LLC</strong> (Colorado, USA) · <a href="/contact">Contact</a> · <a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy Policy</a> · <a href="https://github.com/tollwarden/tollwarden">Source</a> · contact@tollwarden.com${analyticsFor(cfg)?.settings ?? ""}</footer>
 </main>`;
 }
 
 /**
  * Browser homepage. Rendered per request from config (pricing — llms.txt
  * policy) and the TTL-cached public snapshot (pubstats.ts, five-minute
- * refresh). Static markup only — no script, zero external resources — so it
- * serves under the same locked-down CSP as the dashboards
- * (style-src 'unsafe-inline' covers the inline width percentages on the
- * verdict bar).
+ * refresh). Static markup; the only scripts are the opt-in analytics consent
+ * snippets, under publicPageCsp (style-src 'unsafe-inline' covers the inline
+ * width percentages on the verdict bar).
  */
 export function homePageHtml(cfg: TollWardenConfig, stats?: PublicStats | null): string | null {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
+${analyticsFor(cfg)?.head ?? ""}<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(HOME_TITLE)}</title>
+${ICON_LINKS}
 ${seoMeta(cfg, HOME_TITLE, HOME_DESCRIPTION, "/")}
 <style>
 ${HOME_CSS}
@@ -655,12 +839,12 @@ ${HOME_CSS}
 </head>
 <body>
 ${homeBodyHtml(cfg, stats)}
-</body>
+${analyticsFor(cfg)?.banner ?? ""}</body>
 </html>`;
 }
 
 function legalPageHtml(cfg: TollWardenConfig, file: string, title: string, description: string, path: string): string | null {
-  const key = `${path}|${cfg.publicBaseUrl}`;
+  const key = pageKey(cfg, path);
   if (!legalCache.has(key)) {
     const md = loadDoc(file);
     legalCache.set(key, md === null ? null : markdownPageHtml(cfg, title, description, path, md));
@@ -676,4 +860,39 @@ export function termsPageHtml(cfg: TollWardenConfig): string | null {
 export function privacyPageHtml(cfg: TollWardenConfig): string | null {
   return legalPageHtml(cfg, "PRIVACY.md", "TollWarden — Privacy Policy",
     "What TollWarden records when your agent scans an x402 payment, and how long it is kept.", "/privacy");
+}
+
+/** The /contact page body. Addresses must match the ones TERMS.md and PRIVACY.md publish. */
+const CONTACT_MD = `# Contact TollWarden
+
+TollWarden is operated by **TollWarden, LLC**, a Colorado limited liability company. Email is the way to reach us; pick the address that fits so your message lands with the right person.
+
+## General questions, plans, and partnerships
+
+**[contact@tollwarden.com](mailto:contact@tollwarden.com)**: questions about the service, paid plans, integrations, partnerships, and press. Privacy and data requests go here too (see [your rights](/privacy#7-your-rights)).
+
+## Report a security vulnerability
+
+**[security@tollwarden.com](mailto:security@tollwarden.com)**: please report vulnerabilities privately here, not in a public GitHub issue. Include the affected endpoint or package version and steps to reproduce.
+
+## Reputation disputes and abuse
+
+**[abuse@tollwarden.com](mailto:abuse@tollwarden.com)**: if a wallet address has been reported inaccurately or maliciously, or to request removal of a report. A wallet's owner can also attach a signed rebuttal directly with \`POST /v1/reputation/dispute\` (see [the reputation registry](/privacy#5-the-reputation-registry)).
+
+## Bugs and feature requests
+
+Open an issue on [GitHub](https://github.com/tollwarden/tollwarden/issues).
+
+## Never send us secrets
+
+TollWarden is non-custodial and never needs your private keys, seed phrases, or API keys. Don't send them by email, and treat any message asking for them as phishing.
+`;
+
+export function contactPageHtml(cfg: TollWardenConfig): string {
+  const key = pageKey(cfg, "/contact");
+  if (!legalCache.has(key)) {
+    legalCache.set(key, markdownPageHtml(cfg, "TollWarden — Contact",
+      "Contact TollWarden, LLC: general and plan questions, private security vulnerability reports, and wallet-reputation disputes.", "/contact", CONTACT_MD));
+  }
+  return legalCache.get(key)!;
 }
