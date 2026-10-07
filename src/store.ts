@@ -250,6 +250,22 @@ export interface CumulativeSpend {
   last_at: string;
 }
 
+/** The latest attempt at one purchase, keyed purchaseKey() =
+ * `${scope}|sha256(payer, network, pay_to, asset, amount, resource_url)`.
+ * Feeds replay.duplicate_purchase (see detectors/duplicate.ts). Lives for
+ * DUPLICATE_PURCHASE_WINDOW_SECONDS; the hash keeps resource URLs off disk. */
+export interface PurchaseRecord {
+  /** Scans of this attempt: the one that recorded it, plus the post-sign scan
+   * that bound its nonce (at most 2). context.repeat_of may name either. */
+  scan_ids: string[];
+  /** Epoch ms of the attempt's latest scan. */
+  at: number;
+  /** The attempt's authorization nonce, once a scan carried one. */
+  nonce: string | null;
+  /** Unacknowledged attempts in a row, each within the window of the last (1 = first). */
+  attempts: number;
+}
+
 export interface VelocityEvent {
   t: number;   // epoch ms
   usd: number; // scanned payment value (0 if unknown)
@@ -304,6 +320,7 @@ interface Snapshot {
   scan_counts?: Record<string, ScanCount>;
   injection_incidents?: Record<string, InjectionIncident[]>;
   cumulative_spend?: Record<string, CumulativeSpend>;
+  purchases?: Record<string, PurchaseRecord>;
   velocity: Record<string, VelocityEvent[]>;
   counterparties: Record<string, string[]>;
   pins: Record<string, PinRecord>;
@@ -315,6 +332,8 @@ interface Snapshot {
 export interface StoreLimits {
   nonceTtlHours: number;
   maxEntries: number; // per-Map cap
+  /** Purchase records older than this are swept (DUPLICATE_PURCHASE_WINDOW_SECONDS). */
+  purchaseWindowSeconds: number;
 }
 
 export class Store {
@@ -337,6 +356,8 @@ export class Store {
   injectionIncidents: Map<string, InjectionIncident[]> = new Map();
   /** Per (agent key, counterparty) lifetime scanned spend — see CumulativeSpend. */
   cumulativeSpend: Map<string, CumulativeSpend> = new Map();
+  /** Latest attempt per purchase, ordered oldest-first by recency — see PurchaseRecord. */
+  purchases: Map<string, PurchaseRecord> = new Map();
   velocity: Map<string, VelocityEvent[]> = new Map();
   counterparties: Map<string, string[]> = new Map();
   /**
@@ -365,7 +386,7 @@ export class Store {
   private file: string | null = null;
   private dirty = false;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private limits: StoreLimits = { nonceTtlHours: 24, maxEntries: 100_000 };
+  private limits: StoreLimits = { nonceTtlHours: 24, maxEntries: 100_000, purchaseWindowSeconds: 60 };
 
   /** In-memory only (tests / ephemeral) when dataDir is null. */
   constructor(dataDir: string | null, limits?: Partial<StoreLimits>) {
@@ -396,6 +417,7 @@ export class Store {
       this.scanCounts = new Map(Object.entries(snap.scan_counts ?? {}));
       this.injectionIncidents = new Map(Object.entries(snap.injection_incidents ?? {}));
       this.cumulativeSpend = new Map(Object.entries(snap.cumulative_spend ?? {}));
+      this.purchases = new Map(Object.entries(snap.purchases ?? {}));
       this.velocity = new Map(Object.entries(snap.velocity ?? {}));
       this.counterparties = new Map(Object.entries(snap.counterparties ?? {}));
       this.pins = new Map(Object.entries(snap.pins ?? {}));
@@ -480,6 +502,7 @@ export class Store {
     };
     rekeyPrefixed(this.tenantPins);
     rekeyPrefixed(this.cumulativeSpend);
+    rekeyPrefixed(this.purchases);
     rekeyExact(this.velocity);
     rekeyExact(this.counterparties);
     this.markDirty();
@@ -487,7 +510,7 @@ export class Store {
 
   /** Drop every tenant-keyed record for a revoked account. */
   dropTenant(hash: string): void {
-    for (const map of [this.tenantPins, this.cumulativeSpend]) {
+    for (const map of [this.tenantPins, this.cumulativeSpend, this.purchases]) {
       for (const k of [...map.keys()]) if (k.startsWith(`${hash}|`)) map.delete(k);
     }
     this.velocity.delete(hash);
@@ -528,6 +551,7 @@ export class Store {
   /** Timer job: prune, cap, flush. Keeps all of this off the request path. */
   private maintain(): void {
     this.pruneNonces(this.limits.nonceTtlHours);
+    this.prunePurchases(this.limits.purchaseWindowSeconds);
     this.pruneApprovals();
     this.capMaps(this.limits.maxEntries);
     this.beatUptime();
@@ -622,6 +646,7 @@ export class Store {
     Store.evict(this.scanCounts, max);
     Store.evict(this.injectionIncidents, max);
     Store.evict(this.cumulativeSpend, max);
+    Store.evict(this.purchases, max);
     Store.evict(this.disputes, max);
     // approvals are NOT evicted here: dropping an in-flight approval would
     // orphan a legitimately-approved override. Creation refuses when full
@@ -649,6 +674,7 @@ export class Store {
       scan_counts: Object.fromEntries(this.scanCounts),
       injection_incidents: Object.fromEntries(this.injectionIncidents),
       cumulative_spend: Object.fromEntries(this.cumulativeSpend),
+      purchases: Object.fromEntries(this.purchases),
       velocity: Object.fromEntries(this.velocity),
       counterparties: Object.fromEntries(this.counterparties),
       pins: Object.fromEntries(this.pins),
@@ -673,6 +699,21 @@ export class Store {
     for (const [k, v] of this.nonces) {
       if (Date.parse(v.first_seen) < cutoff) {
         this.nonces.delete(k);
+        changed = true;
+      }
+    }
+    if (changed) this.markDirty();
+  }
+
+  /** Drop purchase records past the duplicate window. Called on the timer
+   * (a full sweep, like pruneNonces: rekeyTenant re-inserts records out of
+   * time order, so stopping at the first live record would strand some). */
+  prunePurchases(windowSeconds: number, now = Date.now()): void {
+    const cutoff = now - Math.max(0, windowSeconds) * 1000;
+    let changed = false;
+    for (const [k, v] of this.purchases) {
+      if (v.at < cutoff) {
+        this.purchases.delete(k);
         changed = true;
       }
     }

@@ -19,6 +19,11 @@ export interface TollWardenConfig {
   overpayBlockMultiple: number;
   maxPaymentUsd: number;
   nonceTtlHours: number;
+  /** An outgoing scan matching the previous scan of the same purchase within
+   * this many seconds, under a different authorization, flags
+   * replay.duplicate_purchase (client-retry double debits). 0 disables; capped
+   * at 3600. */
+  duplicatePurchaseWindowSeconds: number;
   dataDir: string;
   publicBaseUrl: string;     // e.g. https://tollwarden.onrender.com
   /** GA4 measurement ID for the public pages, behind an opt-in consent banner.
@@ -135,6 +140,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     overpayBlockMultiple: num(env.OVERPAY_BLOCK_MULTIPLE, 10),
     maxPaymentUsd: num(env.MAX_PAYMENT_USD, 10),
     nonceTtlHours: num(env.NONCE_TTL_HOURS, 24),
+    duplicatePurchaseWindowSeconds: Math.min(Math.max(num(env.DUPLICATE_PURCHASE_WINDOW_SECONDS, 60), 0), 3600),
     dataDir,
     publicBaseUrl: env.PUBLIC_BASE_URL ?? `http://localhost:${num(env.PORT, 4021)}`,
     // Strict format check: the ID is interpolated into an inline script.

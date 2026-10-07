@@ -89,6 +89,7 @@ export function sanitizeScanRequest(raw: unknown): ScanRequest | null {
       // expectations) so a typo can't relax the replay check.
       phase: ctx.phase === "pre_sign" || ctx.phase === "post_sign" ? ctx.phase : undefined,
       offer: str(ctx.offer, 200_000),
+      repeat_of: str(ctx.repeat_of, 100),
     },
     policy: {
       force_deep: policy.force_deep === true,

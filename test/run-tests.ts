@@ -141,7 +141,10 @@ console.log("\n— replay —");
   check("first use allowed", r1.verdict === "allow");
   check("nonce reuse blocked", r2.verdict === "block" && hasCheck(r2, "replay.nonce_reuse"));
   const r3 = scan("outgoing", { ...req, payment: { ...req.payment, nonce: "0xn2" } }, store);
-  check("new nonce allowed again", r3.verdict === "allow");
+  check("new nonce is not a nonce replay (it never blocks)", r3.verdict !== "block" && !hasCheck(r3, "replay.nonce_reuse"), r3.checks.filter((c) => c.verdict !== "allow"));
+  // Same purchase, fresh authorization, milliseconds after the first: that is
+  // the client-retry shape replay.duplicate_purchase exists for.
+  check("…but the same purchase re-authorized moments later flags as a possible duplicate", r3.verdict === "flag" && hasCheck(r3, "replay.duplicate_purchase"), r3.checks.filter((c) => c.verdict !== "allow"));
 }
 {
   const r = scan("outgoing", { payment: { ...basePayment, nonce: undefined }, expected_price_usd: 0.01, context: { origin: "planning" } });
@@ -177,6 +180,251 @@ console.log("\n— replay —");
   legacy.nonces.set(`base:${basePayment.payer.toLowerCase()}:0xnv2`, { first_seen: new Date().toISOString(), times_seen: 1, scan_id: "pre-deploy" });
   const replayed = scan("outgoing", { payment: { ...basePayment, network: "base", nonce: "0xnv2" }, expected_price_usd: 0.01, context: { origin: "planning" } }, legacy);
   check("a nonce recorded under the pre-normalization key still blocks", replayed.verdict === "block" && replayed.checks.find((c) => c.id === "replay.nonce_reuse")?.details?.first_scan_id === "pre-deploy", replayed.checks.filter((c) => c.verdict !== "allow"));
+}
+
+console.log("\n— duplicate purchase (client retries) —");
+{
+  // The x402 reference client signs a fresh authorization for every 402 it
+  // sees (x402#3438), so a retried purchase is a NEW nonce, invisible to
+  // replay.nonce_reuse and far below the velocity rate cap.
+  // Scans in this block run under an account (the API-key tenant), the scope
+  // in which earlier scan ids are echoed; anonymous scope is tested below.
+  const scan = (direction: "outgoing" | "incoming", req: ScanRequest, store?: Store): ScanResponse =>
+    runScan(direction, req, cfg, store ?? new Store(null), { tenant: "tenant-dup" });
+  const buy = (nonce: string | undefined, extra: Partial<ScanRequest> = {}, payment: Record<string, unknown> = {}): ScanRequest => ({
+    payment: { ...basePayment, nonce, ...payment },
+    expected_price_usd: 0.01,
+    context: { origin: "planning", ...(nonce === undefined ? { phase: "pre_sign" as const } : {}), ...(extra.context ?? {}) },
+    ...(extra.agent_id ? { agent_id: extra.agent_id } : {}),
+  });
+  const dupOf = (r: ScanResponse) => r.checks.find((c) => c.id === "replay.duplicate_purchase");
+  const nonAllowIds = (r: ScanResponse) => r.checks.filter((c) => c.verdict !== "allow").map((c) => c.id);
+
+  // Positive: the post-sign retry. Two authorizations, one purchase.
+  {
+    const store = new Store(null);
+    const a = scan("outgoing", buy("0xretry1"), store);
+    const b = scan("outgoing", buy("0xretry2"), store);
+    const d = dupOf(b);
+    check("first purchase allowed with no duplicate check", a.verdict === "allow" && !dupOf(a), nonAllowIds(a));
+    check("same purchase re-authorized under a new nonce flags replay.duplicate_purchase", b.verdict === "flag" && d?.verdict === "flag" && d.severity === "medium", b.checks.filter((c) => c.verdict !== "allow"));
+    check("…naming the earlier scan as the one to acknowledge, with the evidence kind", d?.details?.prior_scan_id === a.scan_id && d?.details?.evidence === "distinct_authorizations" && d?.details?.window_seconds === 60 && String(d?.reason).includes(`"${a.scan_id}"`), d);
+    check("…and nothing else fires: it is not a nonce replay, and one duplicate is far under the rate cap", nonAllowIds(b).join(",") === "replay.duplicate_purchase", nonAllowIds(b));
+  }
+
+  // Positive: five concurrent identical purchases (the x402#1805 shape). Node
+  // serializes runScan, so the first records and the other four flag.
+  {
+    const store = new Store(null);
+    const burst = [1, 2, 3, 4, 5].map((i) => scan("outgoing", buy(`0xburst${i}`), store));
+    check("a burst of 5 identical purchases: 1 allow, 4 flagged duplicates, none blocked", burst[0].verdict === "allow" && burst.slice(1).every((r) => r.verdict === "flag" && !!dupOf(r)) && burst.every((r) => r.verdict !== "block"), burst.map((r) => [r.verdict, nonAllowIds(r)]));
+    check("…each pointing at the attempt just before it, with the attempt count rising", burst.slice(1).every((r, i) => dupOf(r)?.details?.prior_scan_id === burst[i].scan_id && dupOf(r)?.details?.attempts === i + 2), burst.map((r) => dupOf(r)?.details));
+    check("…and from the third attempt the reason calls out a retry loop", !String(dupOf(burst[1])?.reason).includes("retry loop") && String(dupOf(burst[4])?.reason).includes("attempt 5 in a row"), dupOf(burst[4])?.reason);
+  }
+
+  // Positive: an authorization exists, and a fresh pre-sign scan precedes a second one.
+  {
+    const store = new Store(null);
+    scan("outgoing", buy("0xsigned1"), store);
+    const again = scan("outgoing", buy(undefined), store);
+    check("pre-sign scan after an authorization for the same purchase flags (medium)", again.verdict === "flag" && dupOf(again)?.severity === "medium" && dupOf(again)?.details?.evidence === "prior_authorization", nonAllowIds(again));
+  }
+
+  // Positive: two pre-sign scans (the SDK wrapper path: each licenses one signature).
+  {
+    const store = new Store(null);
+    const first = scan("outgoing", buy(undefined), store);
+    const second = scan("outgoing", buy(undefined), store);
+    check("first pre-sign scan allowed", first.verdict === "allow" && !dupOf(first), nonAllowIds(first));
+    check("second pre-sign scan of the same purchase flags (low: the first may never have been signed)", second.verdict === "flag" && dupOf(second)?.severity === "low" && dupOf(second)?.details?.evidence === "prior_pre_sign_scan", nonAllowIds(second));
+  }
+
+  // Negative: pre-sign then post-sign of ONE attempt (the flow replay.pre_sign
+  // recommends) is one purchase. A third authorization is not.
+  {
+    const store = new Store(null);
+    const pre = scan("outgoing", buy(undefined), store);
+    const post = scan("outgoing", buy("0xbound1"), store);
+    check("post-sign re-scan of a pre-sign scan is the same attempt, not a duplicate", post.verdict === "allow" && !dupOf(post), nonAllowIds(post));
+    const third = scan("outgoing", buy("0xbound2"), store);
+    check("…but a second authorization after that flags, and either scan of the attempt can be acknowledged", third.verdict === "flag" && dupOf(third)?.details?.evidence === "distinct_authorizations" && dupOf(third)?.details?.prior_scan_id === post.scan_id, dupOf(third)?.details);
+    const ackPre = scan("outgoing", buy("0xbound3", { context: { origin: "planning", repeat_of: third.scan_id } }), store);
+    check("…(repeat_of the latest attempt clears it)", ackPre.verdict === "allow" && hasCheck(ackPre, "replay.repeat_acknowledged"), nonAllowIds(ackPre));
+    void pre;
+  }
+
+  // Positive: the purchase key normalizes what the replay key normalizes.
+  {
+    const store = new Store(null);
+    scan("outgoing", buy("0xnorm1", {}, { network: "base", resource_url: "https://API.example.com/data#top", pay_to: basePayment.pay_to.toUpperCase().replace("0X", "0x"), amount: "0010000" }), store);
+    const r = scan("outgoing", buy("0xnorm2"), store);
+    check("v1 network name, host case, URL fragment, address case and leading zeros do not split one purchase", !!dupOf(r), nonAllowIds(r));
+  }
+
+  // Negative: any field of the purchase differing makes it a different purchase.
+  {
+    const variants: Array<[string, Record<string, unknown>]> = [
+      ["resource_url", { resource_url: "https://api.example.com/data?page=2" }],
+      ["amount", { amount: "20000" }],
+      ["pay_to", { pay_to: "0x1111111111111111111111111111111111111111" }],
+      ["asset", { asset: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" }],
+      ["network", { network: "eip155:84532" }],
+    ];
+    for (const [field, change] of variants) {
+      const store = new Store(null);
+      scan("outgoing", buy("0xdiff1"), store);
+      const r = scan("outgoing", buy("0xdiff2", {}, change), store);
+      check(`a different ${field} is a different purchase (no duplicate flag)`, !dupOf(r), nonAllowIds(r));
+    }
+  }
+
+  // Negative: outside the window.
+  {
+    const store = new Store(null);
+    scan("outgoing", buy("0xold1"), store);
+    for (const rec of store.purchases.values()) rec.at -= 61_000;
+    const r = scan("outgoing", buy("0xold2"), store);
+    check("the same purchase 61s later (window 60s) is not flagged", !dupOf(r) && r.verdict === "allow", nonAllowIds(r));
+  }
+
+  // Negative: an intentional repeat acknowledged with repeat_of — for that one attempt only.
+  {
+    const store = new Store(null);
+    const a = scan("outgoing", buy("0xack1"), store);
+    const wrong = scan("outgoing", buy("0xack2", { context: { origin: "planning", repeat_of: "not-the-prior-scan" } }), store);
+    check("repeat_of naming some other scan does not clear the flag, and says so", wrong.verdict === "flag" && dupOf(wrong)?.details?.repeat_of_unmatched === "not-the-prior-scan" && String(dupOf(wrong)?.reason).includes("not-the-prior-scan"), dupOf(wrong));
+    const ok = scan("outgoing", buy("0xack3", { context: { origin: "planning", repeat_of: wrong.scan_id } }), store);
+    const ack = ok.checks.find((c) => c.id === "replay.repeat_acknowledged");
+    check("repeat_of naming the latest identical attempt allows it as a deliberate repeat", ok.verdict === "allow" && ack?.verdict === "allow" && ack?.details?.basis === "repeat_of" && !dupOf(ok), nonAllowIds(ok));
+    const next = scan("outgoing", buy("0xack4"), store);
+    check("…and the acknowledgment does not carry over: the next identical purchase flags again", next.verdict === "flag" && dupOf(next)?.details?.prior_scan_id === ok.scan_id && dupOf(next)?.details?.attempts === 2, dupOf(next)?.details);
+    const stale = scan("outgoing", buy("0xack5", { context: { origin: "planning", repeat_of: a.scan_id } }), store);
+    check("…nor does an acknowledgment of an older attempt", stale.verdict === "flag" && !!dupOf(stale), nonAllowIds(stale));
+  }
+
+  // Same authorization twice is replay's job, reported once.
+  {
+    const store = new Store(null);
+    scan("outgoing", buy("0xsame1"), store);
+    const r = scan("outgoing", buy("0xsame1"), store);
+    check("same nonce: replay.nonce_reuse blocks, and no duplicate-purchase check is added", r.verdict === "block" && hasCheck(r, "replay.nonce_reuse") && !dupOf(r), nonAllowIds(r));
+  }
+
+  // Scope: incoming scans, other payers, other accounts, the window switch.
+  {
+    const store = new Store(null);
+    scan("incoming", buy("0xin1"), store);
+    const inc = scan("incoming", buy("0xin2"), store);
+    check("incoming scans (offers received) never record or flag purchases", !dupOf(inc) && store.purchases.size === 0, nonAllowIds(inc));
+
+    const anon = new Store(null);
+    const anonScan = (req: ScanRequest) => runScan("outgoing", req, cfg, anon, { tenant: null });
+    const mine = anonScan(buy("0xp-a"));
+    const otherPayer = anonScan(buy("0xp-b", {}, { payer: "0xB0b0000000000000000000000000000000000002" }));
+    check("another payer buying the same thing is not a duplicate (anonymous scope)", !dupOf(otherPayer), nonAllowIds(otherPayer));
+    // Anonymous scope is the client-declared payer / agent_id: anyone can scan
+    // under it, so the flag must not hand out the earlier caller's scan_id.
+    const anonRetry = anonScan(buy("0xp-c"));
+    const ad = dupOf(anonRetry);
+    check("anonymous retry still flags, but echoes no earlier scan_id (details or reason)", anonRetry.verdict === "flag" && !!ad && ad.details?.prior_scan_id === undefined && !String(ad.reason).includes(mine.scan_id) && !String(ad.reason).includes(anonRetry.scan_id), ad);
+    const anonAck = anonScan(buy("0xp-d", { context: { origin: "planning", repeat_of: anonRetry.scan_id } }));
+    check("…and an anonymous caller acknowledges a repeat with the scan_id it already holds", anonAck.verdict === "allow" && hasCheck(anonAck, "replay.repeat_acknowledged"), nonAllowIds(anonAck));
+
+    const keyed = new Store(null);
+    runScan("outgoing", buy("0xt-a"), cfg, keyed, { tenant: "tenant-a" });
+    const otherTenant = runScan("outgoing", buy("0xt-b"), cfg, keyed, { tenant: "tenant-b" });
+    check("another account buying the same thing is not a duplicate", !dupOf(otherTenant), nonAllowIds(otherTenant));
+    const rotated = runScan("outgoing", buy("0xt-c", { agent_id: "fresh-agent-id" }), cfg, keyed, { tenant: "tenant-a" });
+    check("a key-holder's retry is caught whatever agent_id it sends (account scope)", !!dupOf(rotated), nonAllowIds(rotated));
+
+    const off = new Store(null);
+    const cfgOff = { ...cfg, duplicatePurchaseWindowSeconds: 0 };
+    runScan("outgoing", buy("0xoff1"), cfgOff, off);
+    const r = runScan("outgoing", buy("0xoff2"), cfgOff, off);
+    check("DUPLICATE_PURCHASE_WINDOW_SECONDS=0 disables the check and stores nothing", !dupOf(r) && off.purchases.size === 0, nonAllowIds(r));
+    check("window config: default 60s, clamped to 0..3600", loadConfig({}).duplicatePurchaseWindowSeconds === 60 && loadConfig({ DUPLICATE_PURCHASE_WINDOW_SECONDS: "99999" }).duplicatePurchaseWindowSeconds === 3600 && loadConfig({ DUPLICATE_PURCHASE_WINDOW_SECONDS: "-5" }).duplicatePurchaseWindowSeconds === 0);
+  }
+
+  // Rollback: a blocked payment was refused, not bought.
+  {
+    const store = new Store(null);
+    const refused = scan("outgoing", { ...buy("0xblk1"), expected_price_usd: 0.0005 }, store); // 20x the expected price
+    const fixed = scan("outgoing", buy("0xblk2"), store);
+    check("a blocked attempt writes no purchase record", refused.verdict === "block" && store.purchases.size === 1 && fixed.verdict === "allow" && !dupOf(fixed), { refused: nonAllowIds(refused), fixed: nonAllowIds(fixed) });
+    const refusedAgain = scan("outgoing", { ...buy("0xblk3"), expected_price_usd: 0.0005 }, store);
+    const retry = scan("outgoing", buy("0xblk4"), store);
+    check("…and leaves the prior record exactly as it was: the next attempt is compared with the last purchase that passed", refusedAgain.verdict === "block" && dupOf(retry)?.details?.prior_scan_id === fixed.scan_id && dupOf(retry)?.details?.attempts === 2, dupOf(retry)?.details);
+  }
+
+  // Never blocks (H-2): not even a long retry storm, on its own.
+  {
+    const store = new Store(null);
+    const storm = Array.from({ length: 8 }, (_, i) => scan("outgoing", buy(`0xstorm${i}`), store));
+    check("the duplicate check never blocks, whatever the attempt count", storm.every((r) => r.checks.filter((c) => c.id.startsWith("replay.")).every((c) => c.verdict !== "block")) && storm.slice(1).every((r) => r.verdict === "flag"), storm.map((r) => r.verdict));
+  }
+
+  // Outcomes through the real API layer: delivered clears, not_delivered does not.
+  {
+    const store = new Store(null);
+    const signer = new VerdictSigner(null);
+    const key = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
+    const api = (req: ScanRequest) => (handleScan("outgoing", req, cfg, store, signer, key) as { body: any }).body;
+    const report = (s: any, outcome: string) => handleOutcomeReport(store, cfg, key, { scan_id: s.scan_id, payment_commitment: s.attestation.payment_commitment, outcome });
+
+    const paid = api(buy("0xout1"));
+    report(paid, "delivered");
+    const rebuy = api(buy("0xout2"));
+    const ack = rebuy.checks.find((c: any) => c.id === "replay.repeat_acknowledged");
+    check("a re-buy after the earlier attempt was reported delivered is a new purchase, not a retry", rebuy.verdict === "allow" && ack?.details?.basis === "outcome:delivered", rebuy.checks.filter((c: any) => c.verdict !== "allow"));
+
+    report(rebuy, "not_delivered");
+    const retry = api(buy("0xout3"));
+    const d = retry.checks.find((c: any) => c.id === "replay.duplicate_purchase");
+    check("a retry after the earlier attempt came back not_delivered still flags, and warns it may already be paid", retry.verdict === "flag" && d?.details?.prior_outcome === "not_delivered" && String(d?.reason).includes("pays twice"), d);
+  }
+
+  // Store: hashed keys, expiry sweep, rotation and revocation.
+  {
+    const store = new Store(null);
+    runScan("outgoing", buy("0xst1"), cfg, store, { tenant: "tenant-st" });
+    const [k] = [...store.purchases.keys()];
+    check("purchase records are keyed scope|sha256 and never hold the resource URL", /^tenant-st\|[0-9a-f]{64}$/.test(k) && !JSON.stringify([...store.purchases]).includes("api.example.com"), k);
+    store.rekeyTenant("tenant-st", "tenant-st2");
+    const afterRotate = runScan("outgoing", buy("0xst2"), cfg, store, { tenant: "tenant-st2" });
+    check("key rotation carries the account's purchase records (a retry across a rotation still flags)", !!dupOf(afterRotate), nonAllowIds(afterRotate));
+    store.dropTenant("tenant-st2");
+    check("revocation drops them", store.purchases.size === 0);
+
+    runScan("outgoing", buy("0xst3", {}, { resource_url: "https://api.example.com/a" }), cfg, store, { tenant: "t" });
+    runScan("outgoing", buy("0xst4", {}, { resource_url: "https://api.example.com/b" }), cfg, store, { tenant: "t" });
+    const first = [...store.purchases.values()][0];
+    first.at -= 120_000;
+    store.prunePurchases(60);
+    check("the timer sweep drops expired records and keeps live ones", store.purchases.size === 1);
+  }
+
+  // Persistence: a restart mid-retry (deploys are when 5xx-and-retry happens) keeps the record.
+  {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const dir = mkdtempSync(join(tmpdir(), "tw-purchases-"));
+    const before = new Store(dir);
+    runScan("outgoing", buy("0xpersist1"), cfg, before, { tenant: "tenant-p" });
+    before.close();
+    const after = new Store(dir);
+    const r = runScan("outgoing", buy("0xpersist2"), cfg, after, { tenant: "tenant-p" });
+    after.close();
+    rmSync(dir, { recursive: true, force: true });
+    check("purchase records survive a snapshot round-trip", !!dupOf(r), nonAllowIds(r));
+  }
+
+  // Sanitizer: repeat_of is a bounded string or nothing.
+  {
+    const s1 = sanitizeScanRequest({ payment: {}, context: { repeat_of: { $ne: 1 } } });
+    const s2 = sanitizeScanRequest({ payment: {}, context: { repeat_of: "x".repeat(500) } });
+    check("context.repeat_of: non-strings dropped, long values truncated", s1?.context?.repeat_of === undefined && s2?.context?.repeat_of?.length === 100);
+  }
 }
 
 console.log("\n— overpayment —");
@@ -1048,6 +1296,10 @@ console.log("\n— SDK enforced payment path through the real scanner —");
     const store = opts.store ?? new Store(null);
     const scans: Array<{ body: any; verdict: string; ids: string[]; res: any }> = [];
     const toServer = (async (url: string, init: { body: string; headers: Record<string, string> }) => {
+      if (new URL(url).pathname === "/v1/outcomes") {
+        const r = handleOutcomeReport(store, cfg, init.headers["x-api-key"], JSON.parse(init.body)) as { status: number; body: unknown };
+        return new Response(JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
+      }
       const m = new URL(url).pathname.match(/^\/v1\/scan\/(outgoing|incoming)$/);
       if (!m) return new Response("{}", { status: 404 });
       const body = JSON.parse(init.body);
@@ -1126,10 +1378,34 @@ console.log("\n— SDK enforced payment path through the real scanner —");
   {
     const store = new Store(null);
     const key = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
-    const first = await payThroughWrapper((c) => c.notePlanning(), { store, apiKey: key });
+    // The first purchase reports its delivery outcome (the wrapper default), so
+    // buying the same report again reads as a new purchase, not a retry.
+    const first = await payThroughWrapper((c) => c.notePlanning(), { store, apiKey: key, wrap: { reportOutcomes: true } });
+    await new Promise((r) => setTimeout(r, 0)); // the wrapper reports outcomes fire-and-forget
     const read = await payThroughWrapper((c) => c.observe("Weekly report catalogue: the Report costs one cent.", { sourceUrl: "https://seller.example/catalogue" }), { store, apiKey: key, wrap: { strict: true } });
     const [readOut, readInc] = read.scans;
     check("strict residual: an observe()d decision the outgoing scan clears (payee pinned before the content) is still refused at the offer scan, and nothing is signed", first.status === 200 && readOut?.verdict === "allow" && readOut.ids.includes("injection.untrusted_origin_mitigated") && readInc?.verdict === "flag" && readInc.ids.includes("injection.untrusted_origin") && read.error instanceof TollWardenBlockedError && read.wallet.nonces.length === 0, { first: first.status, scans: nonAllow(read) });
+  }
+
+  // Duplicate purchases on the enforced path. An app-level retry of a paid
+  // fetch is a second wrapper call, so a second pre-sign scan of the same
+  // offer. With no outcome for the first attempt (its fetch threw, or the
+  // caller turned reporting off) that scan flags replay.duplicate_purchase,
+  // and an allow-only enforcer refuses it before anything is signed. Once the
+  // first attempt reports delivered (the wrapper default), buying again pays.
+  {
+    const store = new Store(null);
+    const key = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
+    const first = await payThroughWrapper((c) => c.notePlanning(), { store, apiKey: key });
+    const retry = await payThroughWrapper((c) => c.notePlanning(), { store, apiKey: key });
+    check("enforced wrapper: a retried purchase with no outcome for the first attempt flags replay.duplicate_purchase and is refused before signing", first.status === 200 && first.wallet.nonces.length === 1 && retry.error instanceof TollWardenEnforcementError && retry.wallet.nonces.length === 0 && retry.scans[0]?.verdict === "flag" && retry.scans[0]?.ids.includes("replay.duplicate_purchase") === true, { first: first.status, retry: nonAllow(retry), error: (retry.error as Error | null)?.message });
+
+    const store2 = new Store(null);
+    const key2 = (createApiKey(store2, cfg) as { body: { api_key: string } }).body.api_key;
+    const delivered = await payThroughWrapper((c) => c.notePlanning(), { store: store2, apiKey: key2, wrap: { reportOutcomes: true } });
+    await new Promise((r) => setTimeout(r, 0)); // the wrapper reports outcomes fire-and-forget
+    const rebuy = await payThroughWrapper((c) => c.notePlanning(), { store: store2, apiKey: key2 });
+    check("enforced wrapper: once the first purchase reported delivered, buying the same thing again pays (repeat_acknowledged, one signature each)", delivered.wallet.nonces.length === 1 && rebuy.error === null && rebuy.status === 200 && rebuy.wallet.nonces.length === 1 && rebuy.scans[0]?.verdict === "allow" && rebuy.scans[0]?.ids.includes("replay.repeat_acknowledged") === true, { rebuy: nonAllow(rebuy), error: (rebuy.error as Error | null)?.message });
   }
 
   // Side effect of the old offer scan, gone with it. On a key with human
@@ -1171,8 +1447,10 @@ console.log("\n— merchant pinning (TOFU) —");
   const store = new Store(null);
   const r1 = scan("outgoing", { payment: { ...basePayment, nonce: "0xp1" }, expected_price_usd: 0.01, context: { origin: "planning" } }, store);
   check("first sighting pins domain", r1.verdict === "allow" && hasCheck(r1, "pin.created"));
-  const r2 = scan("outgoing", { payment: { ...basePayment, nonce: "0xp2" }, expected_price_usd: 0.01, context: { origin: "planning" } }, store);
-  check("matching pay_to allowed", r2.verdict === "allow" && hasCheck(r2, "pin.match"));
+  // Another resource on the pinned domain (pins are per domain), so this is a
+  // second purchase rather than the first one re-authorized.
+  const r2 = scan("outgoing", { payment: { ...basePayment, resource_url: "https://api.example.com/data2", nonce: "0xp2" }, expected_price_usd: 0.01, context: { origin: "planning" } }, store);
+  check("matching pay_to allowed", r2.verdict === "allow" && hasCheck(r2, "pin.match"), r2.checks.filter((c) => c.verdict !== "allow"));
   const r3 = scan(
     "outgoing",
     { payment: { ...basePayment, nonce: "0xp3", pay_to: "0xEvil0000000000000000000000000000000000Ee" }, expected_price_usd: 0.01, context: { origin: "planning" } },
@@ -1414,7 +1692,7 @@ console.log("\n— address poisoning —");
   check("repeat lookalike still blocked (no history pollution)", r2.verdict === "block" && hasCheck(r2, "poison.lookalike"), r2.checks);
 
   // The real address keeps working.
-  const r3 = scan("outgoing", mk(real, "0xpz4"), store);
+  const r3 = scan("outgoing", mk(real, "0xpz4", "https://api.example.com/data2"), store);
   check("real address still allowed after the attack", r3.verdict === "allow" && !hasCheck(r3, "poison.lookalike"), r3.checks.filter((c) => c.verdict !== "allow"));
 
   // An unrelated address is NOT a poisoning hit.
@@ -1816,9 +2094,10 @@ console.log("\n— untrusted origin mitigated by a pre-existing pin (D2) —");
   check("first sighting pins the merchant", hasCheck(first, "pin.created"), first.checks.map((c) => c.id));
 
   // Same payee, later read of the seller's own prose: the payee predates the
-  // content, so the provenance advisory drops to informational.
+  // content, so the provenance advisory drops to informational. (Another
+  // resource on the pinned domain, so it is a second purchase, not a retry.)
   const second = tscan({
-    agent_id: "scout", payment: { ...basePayment, resource_url: url, nonce: "0xd2b" },
+    agent_id: "scout", payment: { ...basePayment, resource_url: `${url}?page=2`, nonce: "0xd2b" },
     expected_price_usd: 0.01, context: { origin: "fetched_content", content: clean },
   }, store);
   check("pinned payee + clean content mitigates the provenance flag", second.verdict === "allow" && hasCheck(second, "injection.untrusted_origin_mitigated") && !hasCheck(second, "injection.untrusted_origin"), second.checks.filter((c) => c.verdict !== "allow"));
@@ -2830,8 +3109,11 @@ console.log("\n— human-in-the-loop approvals: end-to-end —");
   // Allow scans attach nothing; block scans NEVER create approvals.
   const allowRes = handleScan("outgoing", { payment: { ...basePayment, nonce: "0xappr2" }, expected_price_usd: 0.01, context: { origin: "planning" } }, cfg, store, signer, key) as { body: any };
   check("allow scan attaches no approval", allowRes.body.verdict === "allow" && allowRes.body.approval === undefined);
-  handleScan("outgoing", { payment: { ...basePayment, nonce: "0xdupA" }, expected_price_usd: 0.01, context: { origin: "planning" } }, cfg, store, signer, key);
-  const blockRes = handleScan("outgoing", { payment: { ...basePayment, nonce: "0xdupA" }, expected_price_usd: 0.01, context: { origin: "planning" } }, cfg, store, signer, key) as { body: any };
+  // Its own resource, so the first scan is a new purchase rather than a
+  // duplicate of 0xappr2 (which would flag and open an approval).
+  const replayed = { ...basePayment, resource_url: "https://api.example.com/replayed", nonce: "0xdupA" };
+  handleScan("outgoing", { payment: replayed, expected_price_usd: 0.01, context: { origin: "planning" } }, cfg, store, signer, key);
+  const blockRes = handleScan("outgoing", { payment: replayed, expected_price_usd: 0.01, context: { origin: "planning" } }, cfg, store, signer, key) as { body: any };
   check("block scan attaches no approval (never approvable)", blockRes.body.verdict === "block" && blockRes.body.approval === undefined);
 
   // Webhook delivery: HMAC-signed payload with the FULL pay_to + fragment link.
@@ -3288,7 +3570,10 @@ console.log("\n— delivery outcomes: scan-time check —");
 
   const seed = (payTo: string, domain: string, outcomes: string[]) => {
     outcomes.forEach((o, i) => {
-      const p = { ...basePayment, pay_to: payTo, resource_url: `https://${domain}/api`, nonce: `0xseed${payTo.slice(-4)}${i}` };
+      // One resource per seeded outcome: each is its own purchase, so none reads
+      // as a re-authorized duplicate (delivery history aggregates per pay_to and
+      // per domain, so the path does not matter to it).
+      const p = { ...basePayment, pay_to: payTo, resource_url: `https://${domain}/api?seed=${i}`, nonce: `0xseed${payTo.slice(-4)}${i}` };
       const sc = (handleScan("outgoing", { agent_id: `agent-${domain}`, payment: p, expected_price_usd: 0.01, context: { origin: "planning" } }, cfg, store, signer, key) as { body: any }).body;
       handleOutcomeReport(store, cfg, key, { scan_id: sc.scan_id, payment_commitment: sc.attestation.payment_commitment, outcome: o });
     });
@@ -3323,7 +3608,10 @@ console.log("\n— delivery outcomes: prior smoothing + rotation join —");
 
   const seed = (payTo: string, domain: string, outcomes: string[]) => {
     outcomes.forEach((o, i) => {
-      const p = { ...basePayment, pay_to: payTo, resource_url: `https://${domain}/api`, nonce: `0xseed${payTo.slice(-4)}${i}` };
+      // One resource per seeded outcome: each is its own purchase, so none reads
+      // as a re-authorized duplicate (delivery history aggregates per pay_to and
+      // per domain, so the path does not matter to it).
+      const p = { ...basePayment, pay_to: payTo, resource_url: `https://${domain}/api?seed=${i}`, nonce: `0xseed${payTo.slice(-4)}${i}` };
       const sc = (handleScan("outgoing", { agent_id: `agent-${domain}`, payment: p, expected_price_usd: 0.01, context: { origin: "planning" } }, cfg, store, signer, key) as { body: any }).body;
       handleOutcomeReport(store, cfg, key, { scan_id: sc.scan_id, payment_commitment: sc.attestation.payment_commitment, outcome: o });
     });

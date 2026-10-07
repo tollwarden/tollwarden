@@ -630,6 +630,7 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
       checks: [
         "pii: PII/secret detection on resource_url, description, reason, metadata",
         "replay: nonce reuse tracking",
+        "replay (duplicate purchase): the same purchase (payer, pay_to, asset, amount, resource_url) authorized again under a different nonce within DUPLICATE_PURCHASE_WINDOW_SECONDS — client retries that would settle twice (outgoing; flag-only; cleared by context.repeat_of or a reported delivered outcome for the earlier attempt)",
         "overpay: configurable multiple-of-expected-price + absolute ceiling + non-positive amounts — value resolved from the atomic amount and SERVER-known token decimals (a client-declared asset_decimals that disagrees is ignored and flagged)",
         "injection: prompt-injection-triggered payment provenance analysis (fast tier) — weighted multilingual tells with cluster + address-proximity scoring, scanned raw and with HTML/markdown stripped",
         "injection-deep: base64/hex/percent/HTML-entity/JS-escape decoding, tag-character smuggling, homoglyph + leetspeak + letter-spacing folding (bypassed below MICRO_BYPASS_USD except for tool_result/fetched_content; policy.force_deep overrides)",
@@ -671,6 +672,7 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
           content_source_url: "https://...",
           offer: "the raw 402 offer / discovery payload the payment terms came from (enables offer-drift checks; its pay_to is expected, not treated as injected)",
           phase: "pre_sign | post_sign (pre_sign: scanning before signing, so a missing nonce is expected)",
+          repeat_of: "scan_id of an earlier scan of this same purchase you are deliberately buying again (clears replay.duplicate_purchase for that one attempt)",
         },
         policy: {
           force_deep: "boolean — run deep content analysis even below the micropayment threshold",

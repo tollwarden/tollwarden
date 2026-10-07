@@ -45,6 +45,7 @@ const ephemeral = process.env.DATA_DIR === "none";
 const store = new Store(ephemeral ? null : cfg.dataDir, {
   nonceTtlHours: cfg.nonceTtlHours,
   maxEntries: cfg.maxStoreEntries,
+  purchaseWindowSeconds: cfg.duplicatePurchaseWindowSeconds,
 });
 store.loadBadlist(cfg.badlistPath ?? join(cfg.dataDir, "badlist.json"));
 if (cfg.auditLog) store.auditLog = new AuditLog(ephemeral ? null : join(cfg.dataDir, "audit.log"));

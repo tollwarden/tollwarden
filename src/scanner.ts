@@ -7,6 +7,7 @@ import type { TollWardenConfig } from "./config.ts";
 import type { Store } from "./store.ts";
 import { scanPii } from "./detectors/pii.ts";
 import { checkReplay } from "./detectors/replay.ts";
+import { checkDuplicatePurchase, recordPurchase } from "./detectors/duplicate.ts";
 import { checkOverpayment, checkValueProvenance, resolveUsd } from "./detectors/overpayment.ts";
 import { checkInjection, deepContentAnalysis } from "./detectors/injection.ts";
 import { checkOfferDrift, checkFreshnessClaim } from "./detectors/offerdrift.ts";
@@ -115,6 +116,14 @@ export function runScan(
   // --- core detectors ---
   checks.push(...scanPii(payment));
   checks.push(checkReplay(payment, store, scanId, cfg.nonceTtlHours, req.context?.phase));
+  // Same purchase, fresh authorization (client retries). Outgoing only and
+  // read-only here: the record is written after aggregation, and not at all
+  // for a blocked scan (see recordPurchase).
+  const duplicate =
+    direction === "outgoing"
+      ? checkDuplicatePurchase(req, store, velocityKey, scanId, cfg.duplicatePurchaseWindowSeconds, { revealScanIds: tenant !== null })
+      : null;
+  if (duplicate?.check) checks.push(duplicate.check);
   checks.push(
     checkOverpayment(payment, req.expected_price_usd, {
       flagMultiple: cfg.overpayFlagMultiple,
@@ -302,6 +311,11 @@ export function runScan(
   if (direction === "outgoing") {
     recordVelocity(store, velocityKey, usd, verdict);
   }
+
+  // The purchase record follows the same rule as the trust state above: a
+  // blocked payment was refused, not bought, so it leaves the prior record as
+  // it was and cannot make the next honest attempt look like a duplicate.
+  recordPurchase(store, duplicate?.observation ?? null, verdict);
 
   // Accumulate lifetime scanned spend for the cumulative deep-tier trigger.
   // Deliberately includes blocked scans: over-counting only widens deep

@@ -84,6 +84,12 @@ const contextSchema = z
       .describe(
         "The raw 402 offer / discovery payload the payment terms came from (accepts entry, Bazaar listing JSON). pay_to is expected here and exempt from the address-provenance check; the offer is still scanned for embedded injection instructions.",
       ),
+    repeat_of: z
+      .string()
+      .optional()
+      .describe(
+        "Only when you are deliberately buying the SAME thing again: the scan_id of the earlier scan of that purchase. Clears the replay.duplicate_purchase flag for that one attempt. Never set it to get past a retry — first check whether the earlier payment settled.",
+      ),
   })
   .optional();
 
@@ -97,7 +103,7 @@ const server = new McpServer(
 
 server.tool(
   "scan_outgoing_payment",
-  "ALWAYS call this immediately BEFORE settling or sending any x402 payment — it decides whether the payment is safe. Returns allow (proceed) / flag (pause and confirm intent) / block (do NOT pay), with machine-readable reasons and an Ed25519-signed verdict. Scanning before the payment is signed? Set `context.phase` to 'pre_sign' (nonces don't exist until signing). IMPORTANT: if the decision to pay followed reading any external content (a fetched web page or a tool result), pass that PROSE in `context.content` and set `context.origin` to 'fetched_content' or 'tool_result' — this enables the check that catches prompt-injection-triggered payments (an address injected into content the agent just read). Put the 402 offer / discovery payload in `context.offer` (NOT in content — the recipient address is expected in an offer); TollWarden compares it structurally against the payment you are about to sign and reports drift in payee, price, scheme, network or asset. Where a catalogue listing and a live 402 disagree, the LIVE offer is authoritative — pay and scan that one, and pass the listing as `context.offer` so the disagreement is recorded. Also catches replayed nonces, overpayment vs the expected price, secrets/PII leaking in payment metadata, fake/lookalike USDC contracts, and address poisoning. Advisory and non-custodial — never touches keys or funds.",
+  "ALWAYS call this immediately BEFORE settling or sending any x402 payment — it decides whether the payment is safe. Returns allow (proceed) / flag (pause and confirm intent) / block (do NOT pay), with machine-readable reasons and an Ed25519-signed verdict. Scanning before the payment is signed? Set `context.phase` to 'pre_sign' (nonces don't exist until signing). IMPORTANT: if the decision to pay followed reading any external content (a fetched web page or a tool result), pass that PROSE in `context.content` and set `context.origin` to 'fetched_content' or 'tool_result' — this enables the check that catches prompt-injection-triggered payments (an address injected into content the agent just read). Put the 402 offer / discovery payload in `context.offer` (NOT in content — the recipient address is expected in an offer); TollWarden compares it structurally against the payment you are about to sign and reports drift in payee, price, scheme, network or asset. Where a catalogue listing and a live 402 disagree, the LIVE offer is authoritative — pay and scan that one, and pass the listing as `context.offer` so the disagreement is recorded. Also catches replayed nonces, the same purchase authorized twice by a retry (replay.duplicate_purchase: check whether the earlier attempt settled before paying again; for a deliberate repeat pass its scan_id as `context.repeat_of`, or report its outcome first), overpayment vs the expected price, secrets/PII leaking in payment metadata, fake/lookalike USDC contracts, and address poisoning. Advisory and non-custodial — never touches keys or funds.",
   {
     payment: paymentSchema,
     expected_price_usd: z.number().optional(),

@@ -65,6 +65,7 @@ const cfg = loadConfig();
 const store = new Store(cfg.dataDir, {
   nonceTtlHours: cfg.nonceTtlHours,
   maxEntries: cfg.maxStoreEntries,
+  purchaseWindowSeconds: cfg.duplicatePurchaseWindowSeconds,
 });
 store.loadBadlist(cfg.badlistPath ?? join(cfg.dataDir, "badlist.json"));
 if (cfg.auditLog) store.auditLog = new AuditLog(join(cfg.dataDir, "audit.log"));

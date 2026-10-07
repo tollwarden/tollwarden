@@ -63,6 +63,13 @@ export interface ScanContext {
    * scanned for injection tells. Prose the agent read goes in `content`.
    */
   offer?: string;
+  /**
+   * scan_id of an earlier scan of this same purchase that the caller is
+   * deliberately repeating (buying the same resource again on purpose). Clears
+   * replay.duplicate_purchase for that one prior attempt only. A retry loop
+   * that never saw the earlier scan_id cannot set it by accident.
+   */
+  repeat_of?: string;
 }
 
 export interface ScanPolicy {
