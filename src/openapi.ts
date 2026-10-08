@@ -32,7 +32,8 @@ function paidOp(price: string) {
 const PaymentDetails = {
   type: "object",
   description:
-    "The payment (or 402 offer) to screen. Provide as many fields as you have — every field improves detection coverage.",
+    "The payment (or 402 offer) to screen. Provide as many fields as you have, since every field improves detection coverage. It must name a recipient (`pay_to`) or a value (`amount` / `amount_usd`). A payment with neither is rejected with 400 and not scanned. Fields with the wrong type count as absent.",
+  anyOf: [{ required: ["pay_to"] }, { required: ["amount"] }, { required: ["amount_usd"] }],
   properties: {
     scheme: { type: "string", description: 'x402 scheme, e.g. "exact"' },
     network: { type: "string", description: 'CAIP-2 network id, e.g. "eip155:8453". x402 v1 names ("base", "base-sepolia", "polygon", ...) are read as their CAIP-2 id; payment_commitment hashes the string as sent' },
@@ -224,6 +225,9 @@ const ReputationSummary = {
 } as const;
 
 const resp402 = { "402": { description: "Payment Required" } } as const;
+const respScan400 = {
+  "400": { description: "Not scanned, because there is no `payment` object or the payment has no `pay_to` and no `amount` / `amount_usd`. Nothing is recorded and x402 payment is not settled (a free-tier call is still counted)." },
+} as const;
 
 // ---------------------------------------------------------------------------
 // Document
@@ -257,6 +261,7 @@ export function openApiDoc(cfg: TollWardenConfig): object {
               description: "Scan verdict",
               content: { "application/json": { schema: ScanResponse } },
             },
+            ...respScan400,
             ...resp402,
           },
         },
@@ -276,6 +281,7 @@ export function openApiDoc(cfg: TollWardenConfig): object {
               description: "Scan verdict",
               content: { "application/json": { schema: ScanResponse } },
             },
+            ...respScan400,
             ...resp402,
           },
         },

@@ -35,7 +35,8 @@ address-poisoning. Reads are free for your first 100 calls per key.
 
 - BEFORE you settle an outgoing x402 payment: POST ${base}/v1/scan/outgoing with
   the payment. If the verdict is "block", DO NOT pay. If "flag", pause and
-  confirm intent. If "allow", proceed.
+  confirm intent. If "allow", proceed. The payment must carry pay_to or amount
+  (atomic units, as a string); a payment with neither gets a 400 and no verdict.
 - BEFORE you pay a 402 offer you received: POST ${base}/v1/scan/incoming to
   screen the resource URL, price sanity, and counterparty first.
 - To check a counterparty before dealing with it: GET

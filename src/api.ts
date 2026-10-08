@@ -9,7 +9,7 @@ import type { TollWardenConfig } from "./config.ts";
 import { hashApiKey, type Store } from "./store.ts";
 import type { VerdictSigner } from "./verdictsign.ts";
 import { runScan } from "./scanner.ts";
-import { sanitizeScanRequest } from "./sanitize.ts";
+import { hasPaymentSubject, sanitizeScanRequest } from "./sanitize.ts";
 import { paymentCommitment, paymentDigest } from "./commitment.ts";
 import { addDispute, addReport, disputeMessage, summarize } from "./reputation.ts";
 import { activatePlanOnKey, activePlan, getPlan, plansCatalog, resolveEffectiveConfig } from "./plans.ts";
@@ -99,6 +99,21 @@ export function handleScan(
     return {
       status: 400,
       body: { error: "Request body must be JSON with a `payment` object. See GET / for the schema." },
+    };
+  }
+  // A payment with no recipient and no amount has nothing to screen. Scanning
+  // it produced a flag indistinguishable from a real finding, plus an audit
+  // record counted as usage. A 400 writes nothing (no scan, verdict,
+  // attestation or audit record) and x402 settlement is cancelled on >= 400.
+  // It is not a verdict, so it cannot let a payment through: both SDKs throw
+  // on a non-2xx scan response, and the enforcer has no allow to sign with.
+  if (!hasPaymentSubject(req.payment)) {
+    return {
+      status: 400,
+      body: {
+        error: "Nothing to scan, because `payment` has no `pay_to` and no `amount` / `amount_usd`. Send at least one. See GET / for the schema.",
+        hint: "Fields with the wrong type are ignored, and so are x402 offer names, so send payTo as `pay_to` and maxAmountRequired / amount as `amount` (atomic units, as a string).",
+      },
     };
   }
   // Per-key plan overrides (velocity/spend headroom, deep-scan policy), clamped
@@ -654,10 +669,10 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
           scheme: "exact",
           network: "eip155:8453",
           asset: "0x... (token contract; enables canonical-USDC verification)",
-          amount: "atomic units, e.g. '10000'",
+          amount: "atomic units, e.g. '10000' (pay_to or amount/amount_usd is required; a payment with neither gets a 400 and is not scanned)",
           amount_usd: "or decimal USD",
           asset_decimals: "6 (informational — the server resolves decimals from `asset`; a disagreeing value is ignored and flagged)",
-          pay_to: "0x... recipient",
+          pay_to: "0x... recipient (pay_to or amount/amount_usd is required)",
           payer: "0x... payer (optional)",
           resource_url: "https://...",
           description: "string",

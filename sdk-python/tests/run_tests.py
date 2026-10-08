@@ -237,6 +237,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(201, {"api_key": f"psk_mockpy_{time.time_ns()}", "free_calls_remaining": 100})
         if path in ("/v1/scan/outgoing", "/v1/scan/incoming"):
             seen["scans"].append({"headers": dict(self.headers), "body": body})
+            # Mirrors the server, which refuses a payment with no pay_to and no amount instead of scanning it.
+            p = body.get("payment") or {}
+            def named(v):
+                return (isinstance(v, str) and v.strip() != "") or (isinstance(v, (int, float)) and not isinstance(v, bool))
+            if not named(p.get("pay_to")) and not named(p.get("amount")) and not isinstance(p.get("amount_usd"), (int, float)):
+                return self._send(400, {"error": "Nothing to scan, because `payment` has no `pay_to` and no `amount` / `amount_usd`."})
             if "402trigger" in (body.get("payment", {}).get("pay_to") or ""):
                 return self._send(402, {})
             scan = make_scan(body.get("payment", {}), "incoming" if path.endswith("incoming") else "outgoing")
@@ -1197,6 +1203,23 @@ except TollWardenBlockedError:
     check("unparseable 402 offer fails closed (no auto-pay)", False, "wrong error type")
 except TollWardenError as e:
     check("unparseable 402 offer fails closed (no auto-pay)", payments["count"] == 0 and "unparseable 402" in str(e))
+
+# An offer with no payTo and no amount. The server refuses the scan (400), and
+# a refused scan is an error, never a verdict, so nothing is paid.
+def empty_offer_transport(method, url, headers, body):
+    return 402, {}, json.dumps({"x402Version": 2, "accepts": [{"scheme": "exact", "network": "eip155:8453"}]}).encode()
+
+
+tollwarden = TollWardenClient(base_url=BASE)
+guarded = wrap_transport_with_tollwarden(paying_transport, tollwarden, base_transport=empty_offer_transport)
+payments["count"] = 0
+try:
+    guarded("GET", "https://merchant.example/premium", {}, None)
+    check("a scan refused with 400 stops the wrapper (no auto-pay)", False)
+except TollWardenBlockedError:
+    check("a scan refused with 400 stops the wrapper (no auto-pay)", False, "a refusal is not a verdict")
+except TollWardenError as e:
+    check("a scan refused with 400 stops the wrapper (no auto-pay)", e.status == 400 and payments["count"] == 0, (e.status, payments["count"]))
 
 # Provenance flows into the OUTGOING scan (the first of the two).
 tollwarden = TollWardenClient(base_url=BASE)

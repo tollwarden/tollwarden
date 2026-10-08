@@ -8,7 +8,7 @@
  * "field absent", which the detectors already treat as reduced coverage
  * (flagged), never as trust.
  */
-import type { PaymentOrigin, ScanRequest } from "./types.ts";
+import type { PaymentDetails, PaymentOrigin, ScanRequest } from "./types.ts";
 
 const ORIGINS = new Set<string>([
   "planning",
@@ -96,4 +96,16 @@ export function sanitizeScanRequest(raw: unknown): ScanRequest | null {
       skip_deep: policy.skip_deep === true,
     },
   };
+}
+
+/**
+ * Does the sanitized payment name anything to screen: a recipient (pay_to) or
+ * a value (amount / amount_usd)? Without either, every payment check reports
+ * the field missing and the flag that produces says nothing about the payment.
+ * The scan handler refuses such a request with 400 instead of scanning it.
+ * Runs after sanitization, so a field sent with the wrong type, or under a
+ * name the schema does not know (payTo, maxAmountRequired), counts as absent.
+ */
+export function hasPaymentSubject(p: PaymentDetails): boolean {
+  return Boolean(p.pay_to?.trim() || p.amount?.trim() || p.amount_usd !== undefined);
 }

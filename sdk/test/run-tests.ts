@@ -109,6 +109,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
   if (req.method === "POST" && (path === "/v1/scan/outgoing" || path === "/v1/scan/incoming")) {
     const body = await readBody(req);
     seen.scans.push({ headers: req.headers as Record<string, string>, body });
+    // Mirrors the server, which refuses a payment with no pay_to and no amount instead of scanning it.
+    const p = body?.payment ?? {};
+    const named = (v: unknown) => (typeof v === "string" && v.trim() !== "") || typeof v === "number";
+    if (!named(p.pay_to) && !named(p.amount) && typeof p.amount_usd !== "number") {
+      return send(400, { error: "Nothing to scan, because `payment` has no `pay_to` and no `amount` / `amount_usd`." });
+    }
     if ((body?.payment?.pay_to ?? "").includes("402trigger")) return send(402, {});
     const scan = makeScan(body.payment ?? {});
     scan.direction = path.endsWith("incoming") ? "incoming" : "outgoing";
@@ -863,6 +869,11 @@ const merchant = createServer((req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify({ data: "premium" }));
   }
+  if (u.pathname === "/emptyoffer") {
+    // A parseable offer that names no payTo and no amount.
+    res.writeHead(402, { "content-type": "application/json" });
+    return res.end(JSON.stringify({ x402Version: 2, accepts: [{ scheme: "exact", network: "eip155:8453" }] }));
+  }
   if (u.pathname === "/broken402") {
     res.writeHead(402, { "content-type": "application/json" });
     return res.end(JSON.stringify({ error: "payment required" })); // no accepts[]
@@ -1122,6 +1133,16 @@ function signingPayingFetch(signer: TypedDataSigner): typeof fetch {
   try { await guardedFetch(`${MERCHANT}/broken402`); } catch (e) { threw = e; }
   check("unparseable 402 offer fails closed (no auto-pay)", threw instanceof TollWardenError && payments === 0);
   check("fail-closed error explains itself", String((threw as Error).message).includes("unparseable 402"));
+}
+{
+  // An offer with no payTo and no amount. The server refuses the scan (400),
+  // and a refused scan is an error, never a verdict, so nothing is paid.
+  const tollwarden = new TollWardenClient({ baseUrl: BASE });
+  const guardedFetch = wrapFetchWithTollWarden(payingFetch, tollwarden);
+  payments = 0;
+  let threw: unknown = null;
+  try { await guardedFetch(`${MERCHANT}/emptyoffer`); } catch (e) { threw = e; }
+  check("a scan refused with 400 stops the wrapper (no auto-pay)", threw instanceof TollWardenError && !(threw instanceof TollWardenBlockedError) && (threw as TollWardenError).status === 400 && payments === 0, threw);
 }
 {
   // Provenance flows into the OUTGOING scan (the first of the two).

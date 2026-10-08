@@ -4,7 +4,7 @@
 
 [![x402](https://img.shields.io/badge/x402-v2-blue)](https://github.com/x402-foundation/x402)
 [![network](https://img.shields.io/badge/settles%20on-Base%20(USDC)-0052FF)](https://docs.cdp.coinbase.com/x402/quickstart-for-sellers)
-[![tests](https://img.shields.io/badge/tests-674%2F674-brightgreen)](test/run-tests.ts)
+[![tests](https://img.shields.io/badge/tests-727%2F727-brightgreen)](test/run-tests.ts)
 [![npm](https://img.shields.io/npm/v/@tollwarden/client?label=sdk)](https://www.npmjs.com/package/@tollwarden/client)
 [![license](https://img.shields.io/badge/license-BUSL--1.1-lightgrey)](LICENSE)
 
@@ -151,6 +151,8 @@ POST /v1/scan/outgoing
 
 `context.origin` is the key input for injection detection: payments prompted by just-read content are the primary prompt-injection exfiltration path and get elevated scrutiny.
 
+`payment` must name a recipient (`pay_to`) or a value (`amount`, or `amount_usd`). A payment with neither has nothing to screen, so it gets a `400` and is not scanned, recorded, or settled (on a free-tier key it still uses a free call). Fields with the wrong type count as absent, and so do x402 offer names, so send `payTo` as `pay_to` and `maxAmountRequired` as `amount`.
+
 ### Example response (replay blocked)
 
 ```json
@@ -240,7 +242,7 @@ npm install
 
 npm run dev            # local dev server — payments off
 npm run demo:replay    # replay-attack demo: fresh nonce ALLOW → reused nonce BLOCK
-npm test               # 674-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
+npm test               # 727-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
 npm run eval           # detection eval corpus: attack payloads + benign FP guards, graded via real scans (gates CI + publish)
 ```
 
@@ -342,10 +344,10 @@ src/
   commitment.ts   Payment hashing (attestation binding + audit digest)
 mcp/server.ts     MCP server (12 tools — npx tollwarden)
 examples/         replay-demo.ts — reused-nonce attack blocked end-to-end
-test/             674-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
+test/             727-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
 eval/             detection eval corpus + runner (attacks must catch, benign must pass — npm run eval, gates CI)
-sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 146 tests)
-sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 152 tests)
+sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 147 tests)
+sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 153 tests)
 ```
 
 Design notes: verdicts aggregate worst-first (any block ⇒ block); `risk_score` is severity-based with compounding for multiple independent findings; the detection core has **zero runtime dependencies**, so the full suite runs with `node --experimental-strip-types` and no install.

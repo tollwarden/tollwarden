@@ -115,7 +115,19 @@ const SCAN_INPUT_SCHEMA = {
     payment: {
       type: "object",
       description:
-        "The x402 payment (or payment request) to screen: scheme, network, amount (atomic) or amount_usd, asset, pay_to, payer, resource_url, description, reason, nonce, metadata",
+        "The x402 payment (or payment request) to screen: scheme, network, amount (atomic) or amount_usd, asset, pay_to, payer, resource_url, description, reason, nonce, metadata. Must carry pay_to or amount / amount_usd; a payment with neither is rejected with 400 and not scanned.",
+      // Without declared properties {"payment": {}} is a valid instance of this
+      // schema, and production received hundreds of scans with exactly that body.
+      properties: {
+        pay_to: { type: "string", description: "Recipient address" },
+        amount: { type: "string", description: "Atomic token units, e.g. \"50000\" = $0.05 USDC" },
+        amount_usd: { type: "number", description: "Decimal USD, when no atomic amount is available" },
+        network: { type: "string", description: "CAIP-2 network id, e.g. eip155:8453" },
+        asset: { type: "string", description: "Token contract address" },
+        resource_url: { type: "string", description: "The resource being purchased" },
+        nonce: { type: "string", description: "Payment nonce, once signed" },
+      },
+      anyOf: [{ required: ["pay_to"] }, { required: ["amount"] }, { required: ["amount_usd"] }],
     },
     expected_price_usd: { type: "number", description: "What the agent expected this to cost (USD)" },
     context: {

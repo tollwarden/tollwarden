@@ -2643,15 +2643,17 @@ console.log("\n— reputation v2: time decay & reporter credibility —");
 
 console.log("\n— input sanitization & robustness —");
 {
+  // Each body carries an amount so it reaches the scanner; a payment with no
+  // pay_to and no amount is refused before scanning (tested below).
   const hostile: Array<[string, unknown]> = [
-    ["pay_to as number", { payment: { pay_to: 12345, nonce: "h1" } }],
-    ["content as object", { payment: { nonce: "h2" }, context: { origin: "fetched_content", content: { a: 1 } } }],
+    ["pay_to as number", { payment: { pay_to: 12345, amount: "10000", nonce: "h1" } }],
+    ["content as object", { payment: { amount: "10000", nonce: "h2" }, context: { origin: "fetched_content", content: { a: 1 } } }],
     ["expected_price as string", { payment: { amount: "10000", nonce: "h3" }, expected_price_usd: "0.01" }],
     ["payment as array", { payment: [1, 2, 3] }],
-    ["nonce as object", { payment: { nonce: { n: 1 } } }],
-    ["metadata with non-strings", { payment: { nonce: "h4", metadata: { a: 123, b: null, c: ["x"] } } }],
-    ["agent_id as object", { agent_id: { x: 1 }, payment: { nonce: "h5" } }],
-    ["deep prototype keys", { payment: { nonce: "h6", metadata: { __proto__: "x", constructor: "y" } } }],
+    ["nonce as object", { payment: { amount: "10000", nonce: { n: 1 } } }],
+    ["metadata with non-strings", { payment: { amount: "10000", nonce: "h4", metadata: { a: 123, b: null, c: ["x"] } } }],
+    ["agent_id as object", { agent_id: { x: 1 }, payment: { amount: "10000", nonce: "h5" } }],
+    ["deep prototype keys", { payment: { amount: "10000", nonce: "h6", metadata: { __proto__: "x", constructor: "y" } } }],
   ];
   let crashed = 0;
   for (const [name, body] of hostile) {
@@ -2685,6 +2687,56 @@ console.log("\n— input sanitization & robustness —");
 {
   const s = sanitizeScanRequest({ payment: { amount: 10000, nonce: "x" } });
   check("numeric amount coerced to string", s !== null && s.payment.amount === "10000");
+}
+
+console.log("\n— payments with nothing to screen —");
+{
+  const store = new Store(null);
+  store.auditLog = new AuditLog(null);
+  const key = (createApiKey(store, cfg) as { body: { api_key: string } }).body.api_key;
+  const empties: Array<[string, unknown]> = [
+    ["empty payment", { payment: {} }],
+    ["empty payment with agent_id, context and expected price", { agent_id: "probe", payment: {}, expected_price_usd: 0.01, context: { origin: "planning" } }],
+    ["network, nonce and resource but no pay_to or amount", { payment: { network: "eip155:8453", nonce: "0xe1", resource_url: "https://api.example.com/data" } }],
+    ["blank pay_to and amount", { payment: { pay_to: "   ", amount: "" } }],
+    ["pay_to, amount and amount_usd with the wrong types", { payment: { pay_to: 12345, amount: { v: 1 }, amount_usd: "0.01" } }],
+    ["x402 offer field names instead of pay_to / amount", { payment: { payTo: basePayment.pay_to, maxAmountRequired: "10000", network: "eip155:8453" } }],
+  ];
+  let refused = 0;
+  for (const [name, body] of empties) {
+    for (const dir of ["outgoing", "incoming"] as const) {
+      for (const apiKey of [undefined, key]) {
+        const r = handleScan(dir, body, cfg, store, null, apiKey) as { status: number; body: Record<string, unknown> };
+        if (r.status === 400 && typeof r.body.error === "string" && r.body.verdict === undefined && r.body.scan_id === undefined) refused++;
+        else console.error(`  ✗ ${dir} ${apiKey ? "keyed" : "anonymous"}: ${name}`, r);
+      }
+    }
+  }
+  check("a payment with no pay_to and no amount is refused with 400 and no verdict (both directions, keyed and anonymous)", refused === empties.length * 4, refused);
+  const keyRec = store.resolveKey(key).rec;
+  check("refused scans leave no audit record, scan index entry, velocity or purchase record",
+    store.auditLog.head().seq === 0 && store.scanIndex.size === 0 && store.velocity.size === 0 && store.purchases.size === 0,
+    { audit: store.auditLog.head().seq, index: store.scanIndex.size, velocity: store.velocity.size, purchases: store.purchases.size });
+  check("refused scans do not count in the key's scan stats", keyRec !== undefined && keyRec.scans === undefined && keyRec.last_used_at === undefined, keyRec);
+  const err = (handleScan("outgoing", { payment: { payTo: "0x1" } }, cfg, store, null) as { body: { error: string; hint: string } }).body;
+  check("the 400 names the missing fields and the x402 field-name mapping", err.error.includes("pay_to") && err.error.includes("amount") && err.hint.includes("payTo") && err.hint.includes("maxAmountRequired"), err);
+
+  // Any one subject is enough, and those scans are recorded as before.
+  const subjects: Array<[string, Record<string, unknown>]> = [
+    ["pay_to only", { pay_to: basePayment.pay_to }],
+    ["amount only", { amount: "10000" }],
+    ["numeric amount only (coerced)", { amount: 10000 }],
+    ["amount_usd only", { amount_usd: 0.01 }],
+    ["amount_usd of 0 (a value, judged by the overpay check)", { amount_usd: 0 }],
+  ];
+  let scanned = 0;
+  for (const [name, payment] of subjects) {
+    const r = handleScan("incoming", { payment }, cfg, store, null) as { status: number; body: ScanResponse };
+    if (r.status === 200 && ["allow", "flag", "block"].includes(r.body.verdict)) scanned++;
+    else console.error(`  ✗ ${name}`, r);
+  }
+  check("pay_to alone, amount alone or amount_usd alone is scanned", scanned === subjects.length, scanned);
+  check("each of those scans is audited", store.auditLog.head().seq === subjects.length, store.auditLog.head().seq);
 }
 
 console.log("\n— rate limiter —");
