@@ -15,6 +15,7 @@
     "HOME.md",
     "TERMS.md",
     "PRIVACY.md",
+    "integrations/*/docs/tollwarden.md*",
     "og-image.png",
     "icon.png",
     "favicon.ico",

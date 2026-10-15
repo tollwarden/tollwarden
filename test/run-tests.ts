@@ -30,7 +30,7 @@ import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll, isPriv
 import { redactSecrets } from "../src/detectors/pii.ts";
 import { handleOutcomeReport } from "../src/outcomes.ts";
 import { approvePageHtml } from "../src/approvepage.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_DESCRIPTION, ogImagePng, siteIcon, legacyHostRedirect, explicitlyWantsJson, publicPageCsp } from "../src/pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, HOME_TITLE, HOME_DESCRIPTION, ogImagePng, siteIcon, legacyHostRedirect, trailingSlashRedirect, explicitlyWantsJson, publicPageCsp } from "../src/pages.ts";
 import { erc8004Registration, ERC8004_IDENTITY_REGISTRY, logoSvg } from "../src/manifest.ts";
 import { computePublicStats, computeUptime, type PublicStats } from "../src/pubstats.ts";
 import { parseScoutScore, scheduleScoutScoreRefresh } from "../src/detectors/scoutscore.ts";
@@ -39,6 +39,7 @@ import { paymentFromOffer, wrapFetchWithTollWarden, type WrapFetchOptions } from
 import { TollWardenEnforcer, TollWardenEnforcementError } from "../sdk/src/enforce.ts";
 import { TollWardenBlockedError, TollWardenClient } from "../sdk/src/index.ts";
 import { createServer as createHttpServer } from "node:http";
+import { INDEXABLE_PATHS, INTEGRATIONS, INTEGRATIONS_DESCRIPTION, integrationPageHtml, integrationsIndexHtml, integrationTitle } from "../src/pages.ts";
 import type { ScanRequest, ScanResponse } from "../src/types.ts";
 
 const cfg = loadConfig({ TOLLWARDEN_MODE: "dev", PAY_TO: "0xtest" });
@@ -3720,6 +3721,9 @@ const ICON_TAGS = [
   '<img src="/logo.svg" width="24" height="24" alt="">',
 ];
 const withoutIcons = (h: string): string => ICON_TAGS.reduce((acc, t) => acc.split(t).join(""), h);
+// The operator homepage's one JSON-LD data block. `[^<]*` also asserts the JSON escapes "<".
+const JSON_LD = /<script type="application\/ld\+json">([^<]*)<\/script>\n/;
+const withoutJsonLd = (h: string): string => h.replace(JSON_LD, "");
 
 console.log("\n— markdown pages (/, /terms, /privacy, /contact) —");
 {
@@ -3766,6 +3770,26 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
   check("every public page carries a description and Open Graph tags",
     [home, terms, privacy, contact].every((h) => h.includes('<meta name="description"') && h.includes('<meta property="og:title"') && h.includes('<meta name="twitter:card"')));
   check("homepage description stays within the ~160-char snippet budget", HOME_DESCRIPTION.length <= 160);
+  check("homepage title leads with x402 and fits the ~60-char title budget",
+    HOME_TITLE.startsWith("x402 ") && HOME_TITLE.endsWith(" | TollWarden") && HOME_TITLE.length <= 60
+      && home.includes(`<title>${HOME_TITLE}</title>`) && home.includes(`<meta property="og:title" content="${HOME_TITLE}">`));
+  check("homepage H1 is the tagline, the only H1, with the live numbers right below it",
+    home.includes('<h1 class="hero-h">The payment security firewall for AI agents that pay for things.</h1>\n<div class="live">')
+      && (home.match(/<h1\b/g) ?? []).length === 1 && /<p class="hero-stat"><span class="num">[\d,]+<\/span> payments screened\./.test(home));
+  // Structured data: Organization + WebSite, the input to Google's site name.
+  const ld = home.match(JSON_LD);
+  const graph = ld === null ? [] : (JSON.parse(ld[1])["@graph"] as Array<Record<string, unknown>>);
+  const org = graph.find((n) => n["@type"] === "Organization");
+  const site = graph.find((n) => n["@type"] === "WebSite");
+  check("operator homepage carries Organization and WebSite JSON-LD naming TollWarden",
+    (home.match(/<script\b/g) ?? []).length === 1 && org?.name === "TollWarden" && org?.legalName === "TollWarden, LLC"
+      && org?.url === "https://tollwarden.com/" && org?.logo === "https://tollwarden.com/icon.png"
+      && site?.name === "TollWarden" && site?.url === "https://tollwarden.com/"
+      && (site?.publisher as Record<string, unknown> | undefined)?.["@id"] === org?.["@id"]);
+  check("structured data is homepage-only (legal and contact pages carry none)", ![terms, privacy, contact].some((h) => h.includes("<script")));
+  const selfHosted = homePageHtml({ ...cfg, publicBaseUrl: "https://payments.example.org" })!;
+  check("no structured data off the operator's origin (a self-hosted copy is not TollWarden, LLC)",
+    !selfHosted.includes("<script") && !homePageHtml(local)!.includes("ld+json") && selfHosted.includes('content="https://payments.example.org/"'));
   check("og:url is the page's canonical https URL (trailing slash on the base is normalized)",
     home.includes('content="https://tollwarden.com/"') && terms.includes('content="https://tollwarden.com/terms"'));
   check("canonical travels as a Link header; the only <link> tags are same-origin icons",
@@ -3780,7 +3804,7 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
   check("robots.txt omits the Sitemap line without a public origin", !robotsTxt(local).includes("Sitemap:"));
   const sitemap = sitemapXml(live);
   check("sitemap lists exactly the indexable pages",
-    (sitemap.match(/<loc>/g) ?? []).length === 4 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
+    (sitemap.match(/<loc>/g) ?? []).length === 10 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
       && sitemap.includes("<loc>https://tollwarden.com/contact</loc>")
       && !sitemap.includes("/dashboard") && !sitemap.includes("/admin") && !sitemap.includes("/approve"));
   check("sitemap is an empty urlset without a public origin", !sitemapXml(local).includes("<loc>"));
@@ -3801,6 +3825,9 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
       && legacy({ path: "/privacy", host: "WWW.PaySafe-Agent.com:443" }) === "https://tollwarden.com/privacy"
       && legacy({ path: "/contact" }) === "https://tollwarden.com/contact");
   check("explicit-JSON index request on the old domain is served in place", legacy({ explicitJson: true }) === null);
+  check("trailing-slash public pages on the old domain reach the canonical page in one hop",
+    legacy({ path: "/terms/" }) === "https://tollwarden.com/terms" && legacy({ path: "/contact/", search: "?a=1" }) === "https://tollwarden.com/contact?a=1"
+      && legacy({ path: "/v1/plans/" }) === null && legacy({ path: "/llms.txt/" }) === null);
   check("old-SDK traffic is never redirected: POST scans, .well-known, llms.txt, API",
     legacy({ method: "POST", path: "/v1/scan/outgoing" }) === null && legacy({ path: "/.well-known/erc8004.json" }) === null
       && legacy({ path: "/.well-known/paysafe-verdict-key" }) === null && legacy({ path: "/llms.txt" }) === null
@@ -3809,6 +3836,18 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
     legacy({ path: "/dashboard" }) === null && legacy({ path: "/approve" }) === null);
   check("the canonical host itself never redirects (no loop)", legacy({ host: "tollwarden.com" }) === null);
   check("no redirect without a public https origin", legacy({}, local) === null);
+  // Trailing slash on the public pages: same-host 301 (strict routing stays on for everything else).
+  const slash = (path: string, method = "GET", search = "") => trailingSlashRedirect({ method, path, search });
+  check("/terms/, /privacy/ and /contact/ 301 to the slashless page, query kept, HEAD too",
+    slash("/terms/") === "/terms" && slash("/privacy/", "HEAD") === "/privacy" && slash("/contact/", "GET", "?ref=x") === "/contact?ref=x");
+  check("trailing-slash redirect never touches the API, other pages, writes or path tricks",
+    slash("/v1/plans/") === null && slash("/v1/scan/outgoing/", "POST") === null && slash("/terms/", "POST") === null
+      && slash("/dashboard/") === null && slash("/") === null && slash("//") === null && slash("/terms//") === null
+      && slash("/TERMS/") === null && slash("/terms") === null && slash("//evil.example/") === null);
+  // GET / picks HTML vs JSON with explicitlyWantsJson in both servers (index.ts, devserver.ts).
+  check("GET / serves the homepage to crawlers' Accept values; JSON only on an explicit request",
+    ["*/*", undefined, "", "text/html", "text/html,application/xhtml+xml,application/signed-exchange;v=b3,application/xml;q=0.9,*/*;q=0.8"]
+      .every((a) => !explicitlyWantsJson(a)) && explicitlyWantsJson("application/json"));
   const png = ogImagePng();
   check("og-image.png ships and is a 1200×630 PNG",
     png !== null && png.subarray(1, 4).toString("ascii") === "PNG" && png.readUInt32BE(16) === 1200 && png.readUInt32BE(20) === 630);
@@ -3849,7 +3888,7 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
       && loadConfig({ ...devEnv, GA_MEASUREMENT_ID: "G-X1');alert(1)//" }).gaMeasurementId === null
       && loadConfig({ ...devEnv, GA_MEASUREMENT_ID: "UA-12345-1" }).gaMeasurementId === null);
   check("without GA_MEASUREMENT_ID, public pages carry no analytics and the CSP names no Google host (self-hosted deploys)",
-    [home, terms, privacy, contact].every((h) => !h.includes("<script") && !h.includes('id="consent"') && !h.includes('id="cookie-settings"'))
+    [withoutJsonLd(home), terms, privacy, contact].every((h) => !h.includes("<script") && !h.includes('id="consent"') && !h.includes('id="cookie-settings"'))
       && publicPageCsp(live) === "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
   const liveGa = { ...live, gaMeasurementId: "G-P108141G91" };
   const gaPages = [homePageHtml(liveGa)!, termsPageHtml(liveGa)!, privacyPageHtml(liveGa)!, contactPageHtml(liveGa)];
@@ -4042,6 +4081,122 @@ console.log("\n— public stats + self-measured uptime (/, /v1/stats) —");
   const bare = homePageHtml(cfg)!;
   check("homepage without a snapshot shows honest zeros, never fabricated numbers",
     bare.includes('<div class="n">0</div>') && bare.includes("n/a") && bare.includes("seg-empty") && !bare.includes("{{"));
+}
+
+console.log("\n— integration pages (/integrations, /integrations/<name>) —");
+{
+  const live = { ...cfg, publicBaseUrl: "https://tollwarden.com" };
+  const local = { ...cfg, publicBaseUrl: "http://localhost:4021" };
+  const paths = ["/integrations", ...INTEGRATIONS.map((i) => `/integrations/${i.name}`)];
+  const body = (h: string): string => h.slice(h.indexOf('<div class="wrap">'), h.indexOf("<footer>"));
+  check("every integration is an indexable path, and every indexable /integrations path is a listed integration",
+    paths.every((p) => (INDEXABLE_PATHS as readonly string[]).includes(p))
+      && INDEXABLE_PATHS.filter((p) => p.startsWith("/integrations")).length === paths.length);
+  const pages = INTEGRATIONS.map((i) => ({ i, html: integrationPageHtml(live, i.name)! }));
+  check("every integration page renders from its package's docs copy",
+    pages.every(({ i, html }) => html !== null && html.includes(i.pkg) && html.includes("tollwarden_scan_payment")));
+  check("each page title leads with x402 and the framework, and the single H1 matches it",
+    pages.every(({ i, html }) => html.includes(`<title>${integrationTitle(i)}</title>`) && integrationTitle(i).startsWith(`x402 payment security for ${i.short} agents`)
+      && (html.match(/<h1\b/g) ?? []).length === 1 && html.includes(`>x402 payment security for ${i.short} agents</h1>`)));
+  check("each page's og:url and canonical Link header name its own https URL",
+    pages.every(({ i, html }) => html.includes(`<meta property="og:url" content="https://tollwarden.com/integrations/${i.name}">`)
+      && canonicalLinkHeader(live, `/integrations/${i.name}`) === `<https://tollwarden.com/integrations/${i.name}>; rel="canonical"`));
+  check("integration descriptions stay within the ~160-char snippet budget",
+    [INTEGRATIONS_DESCRIPTION, ...INTEGRATIONS.map((i) => i.description)].every((d) => d.length <= 160));
+  check("docs front matter, the doc's own H1 and badge images are stripped",
+    pages.every(({ html }) => !body(html).includes("title: TollWarden") && !body(html).includes("<hr>") && !body(html).includes("shields.io") && !body(html).includes("![")));
+  check("integration copy carries no em dashes",
+    [integrationsIndexHtml(live), ...pages.map((p) => p.html)].every((h) => !body(h).includes("—")));
+  check("each page links the other integrations and the index",
+    pages.every(({ i, html }) => INTEGRATIONS.every((o) => o === i || html.includes(`href="/integrations/${o.name}"`)) && html.includes('href="/integrations"')));
+  const index = integrationsIndexHtml(live);
+  check("the index links every integration page under its own title and canonical URL",
+    INTEGRATIONS.every((i) => index.includes(`<a href="/integrations/${i.name}">${i.framework}</a>`))
+      && index.includes("<title>x402 payment security for AI agent frameworks | TollWarden</title>")
+      && index.includes('<meta property="og:url" content="https://tollwarden.com/integrations">'));
+  check("the index states the free-call allowance from config", integrationsIndexHtml({ ...live, freeCalls: 7 }).includes("The first 7 calls per API key are free"));
+  check("unknown, prototype-key, wrong-case and path-shaped names render nothing (the route 404s)",
+    ["nope", "", "__proto__", "constructor", "toString", "LangChain", "langchain/", "../TERMS.md"].every((n) => integrationPageHtml(live, n) === null));
+  check("integration pages are HTML-escaped markdown: renderer tags only, no script, nothing external loads",
+    [index, ...pages.map((p) => p.html)].every((h) => !h.includes("<script")
+      && !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(h))));
+  check("no og:url on integration pages without a public https origin",
+    !integrationPageHtml(local, "langchain")!.includes("og:url") && !integrationsIndexHtml(local).includes("og:url"));
+  const sitemap = sitemapXml(live);
+  check("sitemap lists the integrations index and every integration page", paths.every((p) => sitemap.includes(`<loc>https://tollwarden.com${p}</loc>`)));
+  const legacy = (path: string, search = "") => legacyHostRedirect(live, { method: "GET", host: "paysafe-agent.com", path, search, explicitJson: false });
+  check("integration pages on the old domain 301 to the canonical origin, query string preserved",
+    paths.every((p) => legacy(p) === `https://tollwarden.com${p}`) && legacy("/integrations/crewai", "?ref=x") === "https://tollwarden.com/integrations/crewai?ref=x");
+  check("an unknown integration on the old domain is not redirected (it 404s in place)", legacy("/integrations/nope") === null);
+  const home = homePageHtml(live)!;
+  check("homepage links the integrations index and every integration page",
+    home.includes('<a href="/integrations">') && INTEGRATIONS.every((i) => home.includes(`<a href="/integrations/${i.name}">`)));
+
+  // Both servers over real HTTP, so the routes are proven wired and not just
+  // the renderers. Each runs in dev mode on a free port with a throwaway data dir.
+  const { spawn } = await import("node:child_process");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { request } = await import("node:http");
+  type Got = { status: number; headers: import("node:http").IncomingHttpHeaders; body: string };
+  const get = (port: number, path: string, headers: Record<string, string> = {}) =>
+    new Promise<Got>((resolve, reject) => {
+      const req = request({ host: "127.0.0.1", port, path, agent: false, headers: { accept: "text/html", ...headers } }, (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (c: string) => (text += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  const freePort = () =>
+    new Promise<number>((resolve) => {
+      const s = createHttpServer();
+      s.listen(0, "127.0.0.1", () => {
+        const { port } = s.address() as import("node:net").AddressInfo;
+        s.close(() => resolve(port));
+      });
+    });
+  for (const [label, entry] of [["dev server", "src/devserver.ts"], ["production server", "src/index.ts"]] as const) {
+    const port = await freePort();
+    const dataDir = mkdtempSync(join(tmpdir(), "tollwarden-pages-"));
+    const env: NodeJS.ProcessEnv = { ...process.env, TOLLWARDEN_MODE: "dev", PORT: String(port), DATA_DIR: dataDir, PUBLIC_BASE_URL: "https://tollwarden.com" };
+    delete env.GA_MEASUREMENT_ID;
+    const child = spawn(process.execPath, ["--experimental-strip-types", entry], { cwd: new URL("..", import.meta.url), env, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr!.on("data", (c: Buffer) => (stderr += c.toString()));
+    try {
+      let up = false;
+      for (let t = 0; t < 100 && !up && child.exitCode === null; t++) {
+        up = await get(port, "/health").then((r) => r.status === 200, () => false);
+        if (!up) await new Promise((r) => setTimeout(r, 100));
+      }
+      check(`${label} starts`, up, stderr);
+      if (!up) continue;
+      const pagesOverHttp = await Promise.all(paths.map((p) => get(port, p)));
+      check(`${label}: every integration page is 200 HTML with its canonical Link header and the public-page CSP`,
+        pagesOverHttp.every((r, k) => r.status === 200 && /^text\/html/.test(String(r.headers["content-type"]))
+          && r.headers.link === `<https://tollwarden.com${paths[k]}>; rel="canonical"` && r.headers["content-security-policy"] === publicPageCsp(live)),
+        pagesOverHttp.map((r, k) => `${paths[k]} ${r.status} ${r.headers.link}`));
+      const unknown = await Promise.all(["/integrations/nope", "/integrations/__proto__", "/integrations/LangChain"].map((p) => get(port, p)));
+      check(`${label}: an unknown integration name is a 404`, unknown.every((r) => r.status === 404), unknown.map((r) => r.status));
+      const moved = await get(port, "/integrations/langchain", { host: "paysafe-agent.com" });
+      check(`${label}: the old domain 301s an integration page to the canonical origin`,
+        moved.status === 301 && moved.headers.location === "https://tollwarden.com/integrations/langchain", [moved.status, moved.headers.location]);
+      const map = await get(port, "/sitemap.xml");
+      check(`${label}: sitemap.xml lists the integrations index and every integration page`,
+        map.status === 200 && paths.every((p) => map.body.includes(`<loc>https://tollwarden.com${p}</loc>`)));
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise((r) => child.once("exit", r));
+        child.kill();
+        await exited;
+      }
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  }
 }
 
 console.log("\n— injection: latency at the content cap (pathological inputs) —");

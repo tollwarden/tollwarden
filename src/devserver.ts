@@ -33,7 +33,7 @@ import { dashboardHtml } from "./dashboard.ts";
 import { adminDashboardHtml } from "./admindash.ts";
 import { approvePageHtml } from "./approvepage.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, legacyHostRedirect, explicitlyWantsJson, publicPageCsp } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, legacyHostRedirect, trailingSlashRedirect, explicitlyWantsJson, publicPageCsp, integrationByName, integrationPageHtml, integrationsIndexHtml } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
@@ -94,15 +94,16 @@ const server = createServer(async (req, res) => {
       method, host: req.headers.host, path, search: url.search,
       explicitJson: explicitlyWantsJson(req.headers.accept),
     });
-    if (legacy !== null) {
-      res.writeHead(301, { location: legacy, "cache-control": "public, max-age=86400" });
+    const redirect = legacy ?? trailingSlashRedirect({ method, path, search: url.search });
+    if (redirect !== null) {
+      res.writeHead(301, { location: redirect, "cache-control": "public, max-age=86400" });
       res.end();
       return;
     }
     if (method === "GET" && path === "/") {
-      // Same content negotiation as production: HTML for browsers, JSON otherwise.
+      // Same content negotiation as production: HTML unless JSON is explicitly requested.
       const home = homePageHtml(cfg, publicStats(store));
-      if (home !== null && /text\/html/.test(req.headers.accept ?? "")) {
+      if (home !== null && !explicitlyWantsJson(req.headers.accept)) {
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
           "content-security-policy": publicPageCsp(cfg),
@@ -183,6 +184,25 @@ const server = createServer(async (req, res) => {
     else if (method === "GET" && (path === "/terms" || path === "/privacy" || path === "/contact")) {
       const html = path === "/terms" ? termsPageHtml(cfg) : path === "/privacy" ? privacyPageHtml(cfg) : contactPageHtml(cfg);
       if (html === null) out = { status: 404, body: { error: "Document not available in this deployment" } };
+      else {
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": publicPageCsp(cfg),
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+          ...canonicalHeader(path),
+        });
+        res.end(html);
+        return;
+      }
+    }
+    else if (method === "GET" && (path === "/integrations" || path.startsWith("/integrations/"))) {
+      const name = path.slice("/integrations/".length);
+      const html = path === "/integrations" ? integrationsIndexHtml(cfg)
+        : integrationByName(name) === undefined ? undefined
+        : integrationPageHtml(cfg, name);
+      if (html === undefined) out = { status: 404, body: { error: "Unknown integration. The list is at /integrations" } };
+      else if (html === null) out = { status: 404, body: { error: "Document not available in this deployment" } };
       else {
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",

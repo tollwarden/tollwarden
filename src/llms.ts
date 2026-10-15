@@ -79,6 +79,7 @@ you automatically (same three tools + a framework-native hook):
   NeMo Agent Toolkit:  pip install nemo-tollwarden
   Coinbase AgentKit:   pip install agentkit-tollwarden
   Vercel AI SDK:       npm install @tollwarden/ai-sdk
+Each package has a setup page under ${base}/integrations
 
 Minimal (TS):
   import { TollWardenClient } from "@tollwarden/client";
@@ -165,7 +166,7 @@ reports is always free.
 - OpenAPI:     ${base}/openapi.json
 - x402 manifest: ${base}/.well-known/x402
 - Agent card:  ${base}/.well-known/agent-card.json
-- Self-documenting JSON: ${base}/ (browsers get a human homepage; agents get JSON)
+- Self-documenting JSON: ${base}/ with "Accept: application/json" (any other Accept gets the human homepage)
 - Terms of Use:  ${base}/terms
 - Privacy Policy: ${base}/privacy
 - Contact:       ${base}/contact (security reports: security@tollwarden.com)

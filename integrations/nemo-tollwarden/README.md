@@ -31,6 +31,19 @@ tollwarden_scan_payment(payment={...}, direction="outgoing", content="<the page/
 
 If the `pay_to` address appears in that content, the payment is blocked. (LangChain and CrewAI integrations auto-tag this via a callback; NeMo has no global tool-output hook, so it's an explicit parameter the agent — or your workflow — fills.)
 
+## Enforcement, so a blocked payment can't execute
+
+The scan function returns a verdict, and a model can ignore it. `guarded_payment` wraps your workflow's payment executor so a block verdict raises `TollWardenBlockedError` before the executor is ever called. It takes a sync or an async executor, and with an async one it returns a coroutine function and runs the scan off the event loop.
+
+```python
+from nemo_tollwarden import guarded_payment
+
+safe_pay = guarded_payment(execute_x402_payment, tollwarden)  # strict=True refuses flags too
+await safe_pay(payment, content=page_text)
+```
+
+Pass `content` here too, for the reason above. The wrapper scans with whatever text you hand it and nothing else.
+
 ## The functions
 
 | Function | When to call it |

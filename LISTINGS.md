@@ -34,7 +34,7 @@ TollWarden is a drop-in security layer for agents that pay (or get paid) over x4
 - Manifest: `https://tollwarden.com/.well-known/x402`
 - Agent card: `https://tollwarden.com/.well-known/agent-card.json`
 - SDK: `npm install @tollwarden/client` (https://www.npmjs.com/package/@tollwarden/client)
-- Docs: `https://tollwarden.com/` (self-documenting) + repo README
+- Docs: `https://tollwarden.com/llms.txt` + `https://tollwarden.com/openapi.json` + repo README (`/` returns its JSON index only with `Accept: application/json`)
 
 ---
 
@@ -80,13 +80,13 @@ Beyond the hosted service, TollWarden ships published client SDKs and **five** f
 | `agentkit-tollwarden` | PyPI | Coinbase AgentKit integration | https://pypi.org/project/agentkit-tollwarden/ |
 
 **Short blurb (for a registry that lists SDKs/integrations):**
-TollWarden gives agents "scan before you pay" for x402 payments. Drop-in packages for LangChain, CrewAI, NeMo Agent Toolkit, Coinbase AgentKit, and the Vercel AI SDK add three tools (scan / check reputation / report) plus a provenance hook that auto-tags what the agent reads — so prompt-injection-triggered-payment detection works with no prompt engineering — and a `guarded_payment` wrapper that refuses blocked payments by construction. The core SDKs (npm `@tollwarden/client`, PyPI `tollwarden`) add wallet-side enforcement (signers that refuse unscanned payments), human-in-the-loop approval waiting, and automatic delivery-outcome reporting from the payment path. Advisory and non-custodial.
+TollWarden gives agents "scan before you pay" for x402 payments. Drop-in packages for LangChain, CrewAI, NeMo Agent Toolkit, Coinbase AgentKit, and the Vercel AI SDK add three tools (scan / check reputation / report). Each also ships a `guarded_payment` / `guardedPayment` wrapper that refuses blocked payments by construction. The LangChain, CrewAI and Vercel AI SDK packages auto-tag what the agent reads, so prompt-injection-triggered-payment detection works with no prompt engineering. NeMo and AgentKit take that content as an explicit argument. The core SDKs (npm `@tollwarden/client`, PyPI `tollwarden`) add wallet-side enforcement (signers that refuse unscanned payments), human-in-the-loop approval waiting, and automatic delivery-outcome reporting from the payment path. Advisory and non-custodial.
 
 ---
 
 ## External docs submissions — checklist
 
-Each framework maintains a community / providers / integrations docs surface; getting TollWarden listed there is how that framework's users discover it. Ready-to-submit copy already lives beside each integration as `docs/tollwarden.md` (or `.mdx`). Confirm the exact contribution path in each repo's CONTRIBUTING before opening the PR.
+Each framework maintains a community / providers / integrations docs surface; getting TollWarden listed there is how that framework's users discover it. Ready-to-submit copy already lives beside each integration as `docs/tollwarden.md` (or `.mdx`). The same file renders on the site at `/integrations/<name>`, so an edit there changes the public page too. Confirm the exact contribution path in each repo's CONTRIBUTING before opening the PR.
 
 - [x] **LangChain** — integrations-docs PR **submitted** 2026-07-16. Copy: `integrations/langchain-tollwarden/docs/tollwarden.mdx`.
 - [ ] **Vercel AI SDK** — add to the AI SDK community providers/integrations docs. Target repo: `vercel/ai` (the docs that render at ai-sdk.dev). Copy: `integrations/ai-sdk/docs/tollwarden.mdx`. Prereq: package published to npm ✅.

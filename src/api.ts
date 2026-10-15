@@ -98,7 +98,7 @@ export function handleScan(
   if (!req) {
     return {
       status: 400,
-      body: { error: "Request body must be JSON with a `payment` object. See GET / for the schema." },
+      body: { error: "Request body must be JSON with a `payment` object. See GET /openapi.json for the schema." },
     };
   }
   // A payment with no recipient and no amount has nothing to screen. Scanning
@@ -111,7 +111,7 @@ export function handleScan(
     return {
       status: 400,
       body: {
-        error: "Nothing to scan, because `payment` has no `pay_to` and no `amount` / `amount_usd`. Send at least one. See GET / for the schema.",
+        error: "Nothing to scan, because `payment` has no `pay_to` and no `amount` / `amount_usd`. Send at least one. See GET /openapi.json for the schema.",
         hint: "Fields with the wrong type are ignored, and so are x402 offer names, so send payTo as `pay_to` and maxAmountRequired / amount as `amount` (atomic units, as a string).",
       },
     };
@@ -641,6 +641,8 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
         "GET /terms": "Free. Terms of Use (human-readable).",
         "GET /privacy": "Free. Privacy Policy (human-readable).",
         "GET /contact": "Free. Contact addresses: general, security vulnerability reports, reputation disputes (human-readable).",
+        "GET /integrations": "Free. Index of the framework packages (human-readable).",
+        "GET /integrations/:name": "Free. Setup guide for one framework package, by name (langchain, crewai, ai-sdk, agentkit, nemo; human-readable).",
       },
       checks: [
         "pii: PII/secret detection on resource_url, description, reason, metadata",

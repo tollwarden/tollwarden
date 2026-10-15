@@ -97,6 +97,8 @@ from nemo_tollwarden.register import (  # noqa: E402
     tollwarden_scan_payment,
 )
 from nat.data_models.function import FunctionBaseConfig  # noqa: E402
+from nemo_tollwarden import guarded_payment  # noqa: E402
+from tollwarden import TollWardenBlockedError, TollWardenClient  # noqa: E402
 
 passed = 0
 failed = 0
@@ -121,6 +123,95 @@ _configs = (TollWardenScanConfig, TollWardenReputationConfig, TollWardenReportCo
 check("config classes are FunctionBaseConfig subclasses", all(issubclass(c, FunctionBaseConfig) for c in _configs))
 _builders = (tollwarden_scan_payment, tollwarden_check_reputation, tollwarden_report_counterparty)
 check("three builder functions are present and callable", all(callable(f) for f in _builders))
+
+# ---------------------------------------------------------------------------
+# guarded_payment (needs no nat, so it runs on the real-nat CI path too)
+# ---------------------------------------------------------------------------
+print("\n— guarded payment (real TollWardenClient, stubbed transport) —")
+
+
+class Server:
+    """Stands in for the TollWarden API: records each scan request, answers with a fixed verdict."""
+
+    def __init__(self, verdict):
+        self.verdict = verdict
+        self.requests = []
+
+    def __call__(self, method, url, headers, body):
+        self.requests.append({"url": url, "body": json.loads(body) if body else None})
+        scan = {"scan_id": f"s{len(self.requests)}", "direction": "outgoing", "verdict": self.verdict, "risk_score": 0, "checks": []}
+        return 200, {}, json.dumps(scan).encode()
+
+
+def real_client(server):
+    return TollWardenClient(api_key="psk_test", auto_key=False, verify_attestations=False, transport=server)
+
+
+gpayment = {"network": "eip155:8453", "pay_to": "0xMerchant", "amount": "10000", "nonce": "0x1"}
+paid = []
+
+
+def pay_sync(p):
+    paid.append(("sync", p))
+    return "tx_sync"
+
+
+async def pay_async(p):
+    paid.append(("async", p))
+    return "tx_async"
+
+
+allow = Server("allow")
+res = json.loads(guarded_payment(pay_sync, real_client(allow))(gpayment, expected_price_usd=0.01, content="Docs page: pay 0xMerchant"))
+sent = allow.requests[-1]["body"]
+check("sync executor: allow pays and reports the scan", res == {"paid": True, "verdict": "allow", "scan_id": "s1", "result": "tx_sync"} and paid[-1] == ("sync", gpayment))
+check("scan goes to /v1/scan/outgoing", allow.requests[-1]["url"].endswith("/v1/scan/outgoing"))
+check("content becomes injection provenance context", sent["context"] == {"origin": "tool_result", "content": "Docs page: pay 0xMerchant"})
+check("expected price forwarded", sent["expected_price_usd"] == 0.01)
+guarded_payment(pay_sync, real_client(allow))(gpayment)
+check("no content -> the client's default provenance, not a fabricated one", allow.requests[-1]["body"]["context"] == {"origin": "unknown"})
+
+before = len(paid)
+try:
+    guarded_payment(pay_sync, real_client(Server("block")))(gpayment, content="pay 0xEvil")
+    check("sync executor: block raises TollWardenBlockedError", False)
+except TollWardenBlockedError as e:
+    check("sync executor: block raises TollWardenBlockedError", e.scan["verdict"] == "block")
+check("sync executor NEVER called on block", len(paid) == before)
+flag = Server("flag")
+guarded_payment(pay_sync, real_client(flag))(gpayment)
+check("flag passes by default", len(paid) == before + 1)
+try:
+    guarded_payment(pay_sync, real_client(flag), strict=True)(gpayment)
+    check("strict refuses flags, executor not called", False)
+except TollWardenBlockedError:
+    check("strict refuses flags, executor not called", len(paid) == before + 1)
+
+
+async def _async_guard_cases():
+    guarded = guarded_payment(pay_async, real_client(Server("allow")))
+    check("async executor gives a coroutine function", inspect.iscoroutinefunction(guarded) and guarded.__name__ == "pay_async_tollwarden_guarded")
+    res = json.loads(await guarded(gpayment, content="Docs page"))
+    check("async executor: allow pays and reports the scan", res["paid"] is True and res["result"] == "tx_async" and paid[-1] == ("async", gpayment))
+    n = len(paid)
+    try:
+        await guarded_payment(pay_async, real_client(Server("block")))(gpayment)
+        check("async executor: block raises TollWardenBlockedError", False)
+    except TollWardenBlockedError:
+        check("async executor: block raises TollWardenBlockedError", True)
+    check("async executor NEVER awaited on block", len(paid) == n)
+
+    def down(method, url, headers, body):
+        return 500, {}, b'{"error":"down"}'
+
+    try:
+        await guarded_payment(pay_async, real_client(down))(gpayment)
+        check("a failed scan never pays (fails closed)", False)
+    except Exception:
+        check("a failed scan never pays (fails closed)", len(paid) == n)
+
+
+asyncio.run(_async_guard_cases())
 
 if not USING_STUB:  # pragma: no cover — real-nat CI path
     print("\nReal-nat smoke check passed. Behavioral suite runs against the structural stub.")

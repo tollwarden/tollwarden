@@ -29,6 +29,19 @@ The agent gets three actions — `tollwarden_scan_payment`, `tollwarden_check_re
 
 **Provenance for injection detection.** TollWarden's strongest check catches payments whose *decision* came from content the agent just read. Pass that text as the scan action's optional **`content`** argument; if the `pay_to` address appears in it, the payment is blocked.
 
+## Enforcement, so a blocked payment can't execute
+
+The actions rely on the model choosing to scan and then obeying the verdict. `guarded_payment` doesn't. Wrap your payment executor with it and a block verdict raises `TollWardenBlockedError` before the executor is ever called.
+
+```python
+from agentkit_tollwarden import guarded_payment
+
+safe_pay = guarded_payment(execute_x402_payment, tollwarden, wallet_provider=wallet_provider)  # strict=True refuses flags too
+safe_pay(payment, content=page_text)
+```
+
+With `wallet_provider`, the scan's `payer` is filled from the agent's wallet the same way the scan action does it, and the executor still receives the payment exactly as you passed it. Pass `content` for the same reason as above. AgentKit has no hook that sees what the agent read, so the prompt-injection check runs only on text you hand it.
+
 ## Non-custodial by design
 
 TollWarden only reads payment *metadata* to produce a verdict — it never signs, holds, or routes funds, and the action provider never touches the AgentKit wallet's keys. The settle/refuse decision stays with your agent. Verdicts are Ed25519-signed and payment-bound; for wallet-level enforcement (the signer itself refuses unscanned payments), see `TollWardenEnforcer` in the [tollwarden SDK](https://pypi.org/project/tollwarden/).

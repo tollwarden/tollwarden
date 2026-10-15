@@ -24,6 +24,10 @@ pay_to address came from that content, the payment is blocked. (In LangChain /
 CrewAI this provenance is auto-tagged by a callback; NeMo has no global
 tool-output hook, so the scan function surfaces it as an explicit parameter.)
 
+The scan returns a verdict the model can ignore. To make a block stop the
+payment in code, wrap the workflow's payment executor with guarded_payment
+(guard.py).
+
 TollWarden is advisory and non-custodial — it never touches keys, wallets, or funds.
 """
 from __future__ import annotations
@@ -45,6 +49,8 @@ except ImportError as e:  # pragma: no cover
     ) from e
 
 from tollwarden import TollWardenClient
+
+from .guard import _provenance
 
 # One client per (base_url, api_key, agent_id) so the three functions in a
 # workflow share a free-tier quota and key rather than minting several.
@@ -101,7 +107,7 @@ async def tollwarden_scan_payment(config: TollWardenScanConfig, builder: Builder
         content: Optional[str] = None,
     ) -> str:
         """Screen an x402 payment for safety before settling or accepting it."""
-        context = {"origin": "tool_result", "content": content} if content else None
+        context = _provenance(content)
         fn = client.scan_outgoing if direction != "incoming" else client.scan_incoming
         # Client is sync (urllib); keep the event loop free.
         scan = await asyncio.to_thread(fn, payment, expected_price_usd=expected_price_usd, context=context)

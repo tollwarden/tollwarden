@@ -47,7 +47,7 @@ Python:
 pip install tollwarden
 ```
 
-Drop-in packages also exist for LangChain, CrewAI, Vercel AI SDK, Coinbase AgentKit, and the NVIDIA NeMo Agent Toolkit.
+Drop-in packages also exist for LangChain, CrewAI, Vercel AI SDK, Coinbase AgentKit, and the NVIDIA NeMo Agent Toolkit, each with a setup page at [tollwarden.com/integrations](https://tollwarden.com/integrations).
 
 ## Pricing
 

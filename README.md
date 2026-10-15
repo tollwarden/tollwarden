@@ -4,7 +4,7 @@
 
 [![x402](https://img.shields.io/badge/x402-v2-blue)](https://github.com/x402-foundation/x402)
 [![network](https://img.shields.io/badge/settles%20on-Base%20(USDC)-0052FF)](https://docs.cdp.coinbase.com/x402/quickstart-for-sellers)
-[![tests](https://img.shields.io/badge/tests-727%2F727-brightgreen)](test/run-tests.ts)
+[![tests](https://img.shields.io/badge/tests-763%2F763-brightgreen)](test/run-tests.ts)
 [![npm](https://img.shields.io/npm/v/@tollwarden/client?label=sdk)](https://www.npmjs.com/package/@tollwarden/client)
 [![license](https://img.shields.io/badge/license-BUSL--1.1-lightgrey)](LICENSE)
 
@@ -50,7 +50,7 @@ Building on an agent framework? TollWarden ships drop-in packages that give your
 | Coinbase AgentKit | [`agentkit-tollwarden`](integrations/agentkit-tollwarden) | `pip install agentkit-tollwarden` |
 | Vercel AI SDK | [`@tollwarden/ai-sdk`](integrations/ai-sdk) | `npm install @tollwarden/ai-sdk` |
 
-Each exposes the same three tools (scan / check reputation / report) plus a framework-native provenance hook — a callback (LangChain), an after-tool-call hook (CrewAI), an explicit `content` argument (NeMo), a wallet-aware action (AgentKit), or an `onStepFinish` handler (Vercel AI SDK) — and a `guarded_payment` / `guardedPayment` wrapper for enforcement by construction (the payment executor never runs on a block verdict). See each package's README for the two-line setup.
+Each exposes the same three tools (scan / check reputation / report) and a framework-native way to feed what the agent read into injection detection. LangChain uses a callback, CrewAI an after-tool-call hook and the Vercel AI SDK an `onStepFinish` handler, and all three tag it automatically. NeMo and AgentKit take it as an explicit `content` argument, and the AgentKit action also fills in the payer from the agent's own wallet. Every package also ships a `guarded_payment` / `guardedPayment` wrapper for enforcement by construction (the payment executor never runs on a block verdict), and the NeMo one accepts an async executor. See each package's README for the two-line setup, or its page under [tollwarden.com/integrations](https://tollwarden.com/integrations).
 
 ## What it catches
 
@@ -113,7 +113,7 @@ Each exposes the same three tools (scan / check reputation / report) plus a fram
 | `GET /.well-known/tollwarden-verdict-key` | free | Ed25519 public key for verdict attestations |
 | `GET /v1/audit/verify` | free | Verify the audit-log hash chain (integrity check) |
 | `GET /v1/audit/head` | free | Current audit-log head hash + sequence |
-| `GET /` · `GET /health` | free | Self-documenting schema / liveness |
+| `GET /` · `GET /health` | free | Homepage, or the self-documenting JSON schema with `Accept: application/json` / liveness |
 
 ¹ Per-scan price drops on a plan: **Pro** ($4.99/30d) → $0.005/scan with 6× velocity headroom and deep content analysis on every scan; **Scale** ($19.99/30d) → $0.002/scan at the hard-ceiling limits. Plans raise *your own* thresholds only — replay detection, merchant pinning, asset verification, and PII scanning are identical on every tier and can't be relaxed by paying more. See `GET /v1/plans`.
 
@@ -242,7 +242,7 @@ npm install
 
 npm run dev            # local dev server — payments off
 npm run demo:replay    # replay-attack demo: fresh nonce ALLOW → reused nonce BLOCK
-npm test               # 727-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
+npm test               # 763-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
 npm run eval           # detection eval corpus: attack payloads + benign FP guards, graded via real scans (gates CI + publish)
 ```
 
@@ -344,7 +344,7 @@ src/
   commitment.ts   Payment hashing (attestation binding + audit digest)
 mcp/server.ts     MCP server (12 tools — npx tollwarden)
 examples/         replay-demo.ts — reused-nonce attack blocked end-to-end
-test/             727-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
+test/             763-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
 eval/             detection eval corpus + runner (attacks must catch, benign must pass — npm run eval, gates CI)
 sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 147 tests)
 sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 153 tests)

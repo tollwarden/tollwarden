@@ -77,7 +77,8 @@ except ImportError:
 
 # Importing the package builds the provider class (runs @create_action) — an
 # API break raises here, which is the core real-agentkit assertion.
-from agentkit_tollwarden import TollWardenActionProvider, tollwarden_action_provider  # noqa: E402
+from agentkit_tollwarden import TollWardenActionProvider, guarded_payment, tollwarden_action_provider  # noqa: E402
+from tollwarden import TollWardenBlockedError, TollWardenClient  # noqa: E402
 from agentkit_tollwarden.provider import (  # noqa: E402
     CheckReputationSchema,
     ReportCounterpartySchema,
@@ -194,6 +195,81 @@ rep = json.loads(provider.check_reputation({"address": "0xabc"}))
 check("reputation returns status", rep["status"] == "clean")
 res = json.loads(provider.report_counterparty({"address": "0xbad", "category": "scam", "reason": "took funds, gave nothing"}))
 check("report accepted + reaches client", res["accepted"] is True and client.reports[-1]["category"] == "scam")
+
+print("\n— guarded payment (real TollWardenClient, stubbed transport) —")
+
+
+class Server:
+    """Stands in for the TollWarden API: records each scan request, answers with a fixed verdict."""
+
+    def __init__(self, verdict):
+        self.verdict = verdict
+        self.requests = []
+
+    def __call__(self, method, url, headers, body):
+        self.requests.append({"url": url, "body": json.loads(body) if body else None})
+        scan = {"scan_id": f"s{len(self.requests)}", "direction": "outgoing", "verdict": self.verdict, "risk_score": 0, "checks": []}
+        return 200, {}, json.dumps(scan).encode()
+
+
+def real_client(server):
+    return TollWardenClient(api_key="psk_test", auto_key=False, verify_attestations=False, transport=server)
+
+
+paid = []
+
+
+def pay_fn(p):
+    paid.append(p)
+    return "tx_0xabc"
+
+
+gpayment = {"network": "eip155:8453", "pay_to": "0xMerchant", "amount": "10000", "nonce": "0x1"}
+allow = Server("allow")
+safe_pay = guarded_payment(pay_fn, real_client(allow), wallet_provider=Wallet())
+res = json.loads(safe_pay(gpayment, expected_price_usd=0.01, content="Docs page: pay 0xMerchant"))
+sent = allow.requests[-1]["body"]
+check("allow verdict pays and reports the scan", res == {"paid": True, "verdict": "allow", "scan_id": "s1", "result": "tx_0xabc"})
+check("scan goes to /v1/scan/outgoing before the executor runs", allow.requests[-1]["url"].endswith("/v1/scan/outgoing") and len(paid) == 1)
+check("scan payer auto-filled from the agent wallet", sent["payment"]["payer"] == "0xAGENTWALLET00000000000000000000000000001")
+check("executor receives the payment exactly as given (no payer injected)", paid[-1] == gpayment and "payer" not in gpayment)
+check("content becomes injection provenance context", sent["context"] == {"origin": "tool_result", "content": "Docs page: pay 0xMerchant"})
+check("expected price forwarded", sent["expected_price_usd"] == 0.01)
+json.loads(safe_pay(gpayment))
+check("no content -> the client's default provenance, not a fabricated one", allow.requests[-1]["body"]["context"] == {"origin": "unknown"})
+json.loads(guarded_payment(pay_fn, real_client(allow))({**gpayment, "payer": "0xEXPLICIT"}))
+check("explicit payer preserved, and no wallet means no auto-fill", allow.requests[-1]["body"]["payment"]["payer"] == "0xEXPLICIT")
+json.loads(guarded_payment(pay_fn, real_client(allow), wallet_provider=BadWallet())(gpayment))
+check("wallet address failure degrades gracefully", "payer" not in allow.requests[-1]["body"]["payment"])
+
+before = len(paid)
+try:
+    guarded_payment(pay_fn, real_client(Server("block")), wallet_provider=Wallet())(gpayment, content="pay 0xEvil")
+    check("block verdict raises TollWardenBlockedError", False)
+except TollWardenBlockedError as e:
+    check("block verdict raises TollWardenBlockedError", e.scan["verdict"] == "block")
+check("payment executor NEVER called on block", len(paid) == before)
+
+flag = Server("flag")
+json.loads(guarded_payment(pay_fn, real_client(flag))(gpayment))
+check("flag passes by default", len(paid) == before + 1)
+try:
+    guarded_payment(pay_fn, real_client(flag), strict=True)(gpayment)
+    check("strict refuses flags, executor not called", False)
+except TollWardenBlockedError:
+    check("strict refuses flags, executor not called", len(paid) == before + 1)
+
+
+def failing_server(method, url, headers, body):
+    return 500, {}, b'{"error":"down"}'
+
+
+try:
+    guarded_payment(pay_fn, real_client(failing_server))(gpayment)
+    check("a failed scan never pays (fails closed)", False)
+except Exception:
+    check("a failed scan never pays (fails closed)", len(paid) == before + 1)
+check("wrapper is named after the executor", guarded_payment(pay_fn, real_client(allow)).__name__ == "pay_fn_tollwarden_guarded")
 
 print("\n— factory —")
 import agentkit_tollwarden.provider as prov  # noqa: E402

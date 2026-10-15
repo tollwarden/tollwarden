@@ -99,9 +99,12 @@ function escapeHtml(s: string): string {
 // ---------------------------------------------------------------------------
 
 /** Indexable public pages: sitemap entries and the canonical-URL allowlist. */
-export const INDEXABLE_PATHS = ["/", "/terms", "/privacy", "/contact"] as const;
+export const INDEXABLE_PATHS = [
+  "/", "/terms", "/privacy", "/contact",
+  "/integrations", "/integrations/langchain", "/integrations/crewai", "/integrations/ai-sdk", "/integrations/agentkit", "/integrations/nemo",
+] as const;
 
-export const HOME_TITLE = "TollWarden — payment security firewall for AI agents";
+export const HOME_TITLE = "x402 Payment Security Firewall for AI Agents | TollWarden";
 export const HOME_DESCRIPTION =
   "Payment firewall for AI agents on x402: catches prompt-injection-triggered payments, replays, overpayment and lookalike tokens. Signed verdicts, non-custodial.";
 
@@ -124,6 +127,45 @@ export function canonicalUrl(cfg: TollWardenConfig, path: string): string | null
 export function canonicalLinkHeader(cfg: TollWardenConfig, path: string): string | null {
   const url = canonicalUrl(cfg, path);
   return url === null ? null : `<${url}>; rel="canonical"`;
+}
+
+/** The operator's own public origin, the only one that speaks for TollWarden, LLC. */
+export const OPERATOR_ORIGIN = "https://tollwarden.com";
+
+/**
+ * Organization + WebSite structured data for the homepage, which is where
+ * Google reads a site name from. Emitted only on the operator's own origin: a
+ * self-hosted copy is not TollWarden, LLC's website, and must not tell search
+ * engines it is (it also keeps self-hosted pages scriptless). A JSON-LD block
+ * is a data block, never executed, so publicPageCsp needs no change for it.
+ */
+export function homeStructuredData(cfg: TollWardenConfig): string {
+  if (canonicalOrigin(cfg) !== OPERATOR_ORIGIN) return "";
+  const org = `${OPERATOR_ORIGIN}/#organization`;
+  const data = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": org,
+        name: "TollWarden",
+        legalName: "TollWarden, LLC",
+        url: `${OPERATOR_ORIGIN}/`,
+        logo: `${OPERATOR_ORIGIN}/icon.png`,
+        email: "contact@tollwarden.com",
+        sameAs: ["https://github.com/tollwarden"],
+      },
+      {
+        "@type": "WebSite",
+        "@id": `${OPERATOR_ORIGIN}/#website`,
+        name: "TollWarden",
+        url: `${OPERATOR_ORIGIN}/`,
+        publisher: { "@id": org },
+      },
+    ],
+  };
+  // "<" escaped so no value can close the script element early.
+  return `<script type="application/ld+json">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>\n`;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +300,7 @@ function analyticsFor(cfg: TollWardenConfig): Analytics | null {
 }
 
 /**
- * CSP for the indexable public pages (/, /terms, /privacy, /contact). Without
+ * CSP for the indexable public pages (INDEXABLE_PATHS). Without
  * analytics: no script at all, images from this origin only (the icons). With
  * analytics: inline script only for the two snippets above, by hash (never
  * 'unsafe-inline'), and Google's tag and collection hosts, which the browser
@@ -283,7 +325,7 @@ function seoMeta(cfg: TollWardenConfig, title: string, description: string, path
       `<meta property="og:image" content="${escapeHtml(image)}">`,
       `<meta property="og:image:width" content="1200">`,
       `<meta property="og:image:height" content="630">`,
-      `<meta property="og:image:alt" content="TollWarden — the payment security firewall for AI agents">`,
+      `<meta property="og:image:alt" content="TollWarden, the payment security firewall for AI agents">`,
     ]),
     `<meta name="twitter:card" content="${image === null ? "summary" : "summary_large_image"}">`,
     `<meta name="twitter:title" content="${escapeHtml(title)}">`,
@@ -333,7 +375,9 @@ export const LEGACY_HOSTS: ReadonlySet<string> = new Set(["paysafe-agent.com", "
  * True only when the client explicitly asked for JSON and not HTML
  * (`Accept: application/json`). A missing Accept or a bare wildcard is NOT a JSON
  * request: crawlers and Search Console's change-of-address validator fetch
- * that way, and must see the 301.
+ * that way. GET / uses the same rule on every host, so a crawler sending a
+ * wildcard indexes the homepage rather than the JSON service index (Bing had
+ * indexed the JSON as of 2026-10-15), and on a legacy host it sees the 301.
  */
 export function explicitlyWantsJson(accept: string | undefined): boolean {
   const a = (accept ?? "").toLowerCase();
@@ -344,8 +388,8 @@ export function explicitlyWantsJson(accept: string | undefined): boolean {
  * 301 target for a request to an indexable page on a legacy host, or null to
  * serve the request normally. `/` stays in place only for clients that
  * explicitly ask for JSON (agents reading the service index); everyone else,
- * crawlers included, moves to the canonical origin — where the same content
- * negotiation still serves JSON to curl.
+ * crawlers included, moves to the canonical origin. A trailing-slash variant
+ * (`/terms/`) goes straight to the canonical page in one hop.
  */
 export function legacyHostRedirect(
   cfg: TollWardenConfig,
@@ -354,13 +398,30 @@ export function legacyHostRedirect(
   if (req.method !== "GET" && req.method !== "HEAD") return null;
   const host = (req.host ?? "").toLowerCase().replace(/:\d+$/, "");
   if (!LEGACY_HOSTS.has(host)) return null;
-  if (!(INDEXABLE_PATHS as readonly string[]).includes(req.path)) return null;
-  if (req.path === "/" && req.explicitJson) return null;
-  const target = canonicalUrl(cfg, req.path);
+  const path = req.path.length > 1 && req.path.endsWith("/") ? req.path.slice(0, -1) : req.path;
+  if (!(INDEXABLE_PATHS as readonly string[]).includes(path)) return null;
+  if (path === "/" && req.explicitJson) return null;
+  const target = canonicalUrl(cfg, path);
   return target === null ? null : target + (req.search.startsWith("?") ? req.search : "");
 }
 
 /** Header for pages that must never appear in search results (dashboards, approvals). */
+/**
+ * Same-host 301 target for a public page requested with one trailing slash
+ * (`/terms/` -> `/terms`, query kept), or null. Both servers route strictly
+ * (audit C-1: a path variant must never reach a handler), so without this the
+ * variant is a 404 that a stray inbound link would point crawlers at. Only the
+ * fixed INDEXABLE_PATHS strings can come back, so it is not an open redirect,
+ * and nothing under /v1/ is touched.
+ */
+export function trailingSlashRedirect(req: { method: string; path: string; search: string }): string | null {
+  if (req.method !== "GET" && req.method !== "HEAD") return null;
+  if (req.path.length < 2 || !req.path.endsWith("/")) return null;
+  const path = req.path.slice(0, -1);
+  if (path === "/" || !(INDEXABLE_PATHS as readonly string[]).includes(path)) return null;
+  return path + (req.search.startsWith("?") ? req.search : "");
+}
+
 export const NOINDEX = "noindex, nofollow";
 
 /** GitHub-style heading slug: "5. The reputation registry" -> "5-the-reputation-registry". */
@@ -553,11 +614,11 @@ ${BASE_CSS}
   .navin nav a { color:var(--muted); text-decoration:none; }
   .navin nav a:hover { text-decoration:underline; }
   main { max-width:840px; margin:0 auto; padding:48px 20px 64px; }
-  .live { color:var(--muted); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; letter-spacing:.04em; margin-bottom:14px; }
+  .live { color:var(--muted); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; letter-spacing:.04em; margin:22px 0 8px; }
   .hero-h { font-size:34px; line-height:1.3; margin:0; font-weight:600; letter-spacing:-.01em; text-wrap:pretty; }
-  .hero-h .num { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-weight:700; }
-  .hero-h .num.bad { color:var(--block); }
-  .tagline { font-size:19px; line-height:1.5; margin:14px 0 0; max-width:640px; }
+  .hero-stat { font-size:22px; line-height:1.4; margin:0; font-weight:600; }
+  .hero-stat .num { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-weight:700; }
+  .hero-stat .num.bad { color:var(--block); }
   .lede { margin:10px 0 0; max-width:640px; color:var(--muted); }
   .lede .v-allow { color:var(--allow); } .lede .v-flag { color:var(--flag); } .lede .v-block { color:var(--block); }
   .bar { display:flex; height:10px; border-radius:6px; overflow:hidden; background:var(--inset); margin:24px 0 10px; }
@@ -692,9 +753,9 @@ function heroStatsHtml(stats?: PublicStats | null): string {
   const uptimeMeta = u
     ? `Uptime is self-measured process liveness (a heartbeat cannot see network-level unreachability), recording since ${escapeHtml(u.measured_since.slice(0, 10))}. Refreshed every five minutes; machine-readable at <a href="/v1/stats">/v1/stats</a>, liveness probe at <a href="/health">/health</a>.`
     : `Uptime is self-measured process liveness; no heartbeats recorded yet. Refreshed every five minutes; machine-readable at <a href="/v1/stats">/v1/stats</a>, liveness probe at <a href="/health">/health</a>.`;
-  return `<div class="live">Live · third-party usage only · refreshed every five minutes</div>
-<h1 class="hero-h"><span class="num">${fmtInt(total)}</span> payments screened. <span class="num bad">${fmtInt(blocked)}</span> blocked before settlement.</h1>
-<p class="tagline"><strong>The payment security firewall for AI agents that pay for things.</strong></p>
+  return `<h1 class="hero-h">The payment security firewall for AI agents that pay for things.</h1>
+<div class="live">Live · third-party usage only · refreshed every five minutes</div>
+<p class="hero-stat"><span class="num">${fmtInt(total)}</span> payments screened. <span class="num bad">${fmtInt(blocked)}</span> blocked before settlement.</p>
 <p class="lede">One HTTP call between your agent and settlement. Submit the payment, get back <span class="v-allow">allow</span>, <span class="v-flag">flag</span> or <span class="v-block">block</span> — with machine-readable reasons and an Ed25519 attestation bound to that exact payment. Advisory and non-custodial: it never touches your keys, your wallet, or your funds.</p>
 <div class="bar">${bar}</div>
 <div class="legend"><div class="lg-allow">allow</div><div class="lg-flag">flag</div><div class="lg-block">block</div></div>
@@ -794,7 +855,7 @@ await tollwarden.guardOutgoing(payment); // throws on block</code></pre></div>
 tollwarden = TollWardenClient(agent_id="my-agent")
 tollwarden.guard_outgoing(payment)</code></pre></div>
 </div>
-<p class="prose" style="color:var(--muted);font-size:14px;margin-top:14px">Drop-in packages: LangChain · CrewAI · Vercel AI SDK · Coinbase AgentKit · NVIDIA NeMo Agent Toolkit — the first ${cfg.freeCalls} calls per key are free, no signup.</p>
+<p class="prose" style="color:var(--muted);font-size:14px;margin-top:14px"><a href="/integrations">Drop-in packages</a> for ${INTEGRATIONS.map((i) => `<a href="/integrations/${i.name}">${escapeHtml(i.framework)}</a>`).join(" · ")}. The first ${cfg.freeCalls} calls per key are free, no signup.</p>
 
 <h2 id="pricing">Pricing</h2>
 <p class="prose">Scans are <strong>${escapeHtml(cfg.priceScan)}</strong> each, paid over x402 itself — your agent pays for its own security, per payment it makes. The first <strong>${cfg.freeCalls} calls per API key are free</strong>. Reputation lookups are ${escapeHtml(cfg.priceReputation)}; reporting bad counterparties and recording delivery outcomes is always free.</p>
@@ -833,7 +894,7 @@ ${analyticsFor(cfg)?.head ?? ""}<meta charset="utf-8">
 <title>${escapeHtml(HOME_TITLE)}</title>
 ${ICON_LINKS}
 ${seoMeta(cfg, HOME_TITLE, HOME_DESCRIPTION, "/")}
-<style>
+${homeStructuredData(cfg)}<style>
 ${HOME_CSS}
 </style>
 </head>
@@ -893,6 +954,132 @@ export function contactPageHtml(cfg: TollWardenConfig): string {
   if (!legalCache.has(key)) {
     legalCache.set(key, markdownPageHtml(cfg, "TollWarden — Contact",
       "Contact TollWarden, LLC: general and plan questions, private security vulnerability reports, and wallet-reputation disputes.", "/contact", CONTACT_MD));
+  }
+  return legalCache.get(key)!;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Integration pages (/integrations, /integrations/<name>)            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One drop-in package per agent framework. Each page renders that package's
+ * own docs copy (integrations/<package>/docs/), the text written for the
+ * framework's docs site, so there is one source to keep current. The site
+ * adds the H1 (framework and x402 lead the title, for search) and links to
+ * the other integrations. Every `/integrations/<name>` here must also be in
+ * INDEXABLE_PATHS; a test holds the two lists together.
+ */
+export interface Integration {
+  name: string;        // URL segment
+  framework: string;   // full name, as the homepage lists it
+  short: string;       // name in the page title and H1
+  pkg: string;         // the package to install
+  language: string;
+  doc: string;         // docs copy, relative to the package root
+  description: string; // meta description, within the ~160-char snippet budget
+}
+
+export const INTEGRATIONS: readonly Integration[] = [
+  {
+    name: "langchain", framework: "LangChain", short: "LangChain", pkg: "langchain-tollwarden", language: "Python",
+    doc: "integrations/langchain-tollwarden/docs/tollwarden.mdx",
+    description: "Scan every x402 payment your LangChain or LangGraph agent makes before it settles. Catches prompt-injected payees, replays and overpayment. Signed verdicts.",
+  },
+  {
+    name: "crewai", framework: "CrewAI", short: "CrewAI", pkg: "crewai-tollwarden", language: "Python",
+    doc: "integrations/crewai-tollwarden/docs/tollwarden.mdx",
+    description: "Scan every x402 payment your CrewAI crew makes before it settles. Catches prompt-injected payees, replays and overpayment. Signed verdicts.",
+  },
+  {
+    name: "ai-sdk", framework: "Vercel AI SDK", short: "Vercel AI SDK", pkg: "@tollwarden/ai-sdk", language: "TypeScript",
+    doc: "integrations/ai-sdk/docs/tollwarden.mdx",
+    description: "Scan every x402 payment your Vercel AI SDK agent makes before it settles, with an onStepFinish handler that tags provenance for prompt-injection detection.",
+  },
+  {
+    name: "agentkit", framework: "Coinbase AgentKit", short: "Coinbase AgentKit", pkg: "agentkit-tollwarden", language: "Python",
+    doc: "integrations/agentkit-tollwarden/docs/tollwarden.md",
+    description: "Scan every x402 payment your Coinbase AgentKit agent makes before it settles, with an action provider that fills in the payer from the agent's own wallet.",
+  },
+  {
+    name: "nemo", framework: "NVIDIA NeMo Agent Toolkit", short: "NeMo Agent Toolkit", pkg: "nemo-tollwarden", language: "Python",
+    doc: "integrations/nemo-tollwarden/docs/tollwarden.md",
+    description: "Scan every x402 payment a NeMo Agent Toolkit workflow makes before it settles. Three registered functions, injection provenance and signed verdicts.",
+  },
+];
+
+export const INTEGRATIONS_TITLE = "x402 payment security for AI agent frameworks | TollWarden";
+export const INTEGRATIONS_DESCRIPTION =
+  "TollWarden for LangChain, CrewAI, the Vercel AI SDK, Coinbase AgentKit and NVIDIA NeMo Agent Toolkit. Scan every x402 payment before your agent settles it.";
+
+export const integrationTitle = (i: Integration): string => `x402 payment security for ${i.short} agents | TollWarden`;
+
+/** The integration a URL segment names, or undefined. Only names listed above resolve. */
+export function integrationByName(name: string): Integration | undefined {
+  return INTEGRATIONS.find((i) => i.name === name);
+}
+
+/**
+ * The docs copy minus what the page supplies itself: MDX front matter (the
+ * page has its own title and description), the doc's own H1, and badge
+ * images (the public-page CSP loads images from this origin only).
+ */
+function integrationBody(md: string): string {
+  return md
+    .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "")
+    .replace(/^\s*# .*\r?\n/, "")
+    .replace(/!\[[^\]]*\]\([^)\s]*\)/g, "");
+}
+
+function integrationMarkdown(i: Integration, doc: string): string {
+  const others = INTEGRATIONS.filter((o) => o !== i).map((o) => `- [${o.framework}](/integrations/${o.name}), \`${o.pkg}\``);
+  return [
+    `# ${integrationTitle(i).replace(/ \| TollWarden$/, "")}`,
+    integrationBody(doc).trim(),
+    "## Other integrations",
+    [...others, "- [All integrations](/integrations)"].join("\n"),
+    "",
+  ].join("\n\n");
+}
+
+/** GET /integrations/<name>. Null for an unknown name, or when the docs copy isn't shipped. */
+export function integrationPageHtml(cfg: TollWardenConfig, name: string): string | null {
+  const i = integrationByName(name);
+  if (i === undefined) return null;
+  const path = `/integrations/${i.name}`;
+  const key = pageKey(cfg, path);
+  if (!legalCache.has(key)) {
+    const md = loadDoc(i.doc);
+    legalCache.set(key, md === null ? null : markdownPageHtml(cfg, integrationTitle(i), i.description, path, integrationMarkdown(i, md)));
+  }
+  return legalCache.get(key)!;
+}
+
+function integrationsIndexMarkdown(cfg: TollWardenConfig): string {
+  const rows = INTEGRATIONS.map((i) => `| [${i.framework}](/integrations/${i.name}) | \`${i.pkg}\` | ${i.language} |`);
+  return `# ${INTEGRATIONS_TITLE.replace(/ \| TollWarden$/, "")}
+
+An agent that can read the internet and sign payments can be talked into paying the wrong party. TollWarden scans each x402 payment before it settles and returns allow, flag or block, with per-check reasons and an Ed25519 signature bound to that exact payment.
+
+Each package below adds that scan to one agent framework as tools the model can call. Every package can also wrap your payment executor so a blocked payment never runs. The LangChain, CrewAI and Vercel AI SDK packages observe what the agent reads on their own, so a payment whose payee came from a prompt-injected page gets caught. With NeMo and AgentKit you pass that text in. The first ${cfg.freeCalls} calls per API key are free, with no signup.
+
+| Framework | Package | Language |
+| --- | --- | --- |
+${rows.join("\n")}
+
+## Any other framework
+
+The [TypeScript client](https://www.npmjs.com/package/@tollwarden/client) and the [Python client](https://pypi.org/project/tollwarden/) work in any agent, and \`npx -y tollwarden\` runs an MCP server for any MCP-capable one. Point your model at [llms.txt](/llms.txt) for the integration guide, or read the [OpenAPI contract](/openapi.json).
+
+TollWarden is advisory and non-custodial. It never touches your keys, wallet or funds, and your own systems decide what to do with each verdict.
+`;
+}
+
+/** GET /integrations. Built from INTEGRATIONS and config, so it needs no file. */
+export function integrationsIndexHtml(cfg: TollWardenConfig): string {
+  const key = `${pageKey(cfg, "/integrations")}|${cfg.freeCalls}`;
+  if (!legalCache.has(key)) {
+    legalCache.set(key, markdownPageHtml(cfg, INTEGRATIONS_TITLE, INTEGRATIONS_DESCRIPTION, "/integrations", integrationsIndexMarkdown(cfg)));
   }
   return legalCache.get(key)!;
 }

@@ -57,7 +57,7 @@ import { approvePageHtml } from "./approvepage.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
 import { handleOutcomeReport } from "./outcomes.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, SITE_ICONS, legacyHostRedirect, explicitlyWantsJson, publicPageCsp } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, SITE_ICONS, legacyHostRedirect, trailingSlashRedirect, explicitlyWantsJson, publicPageCsp, integrationByName, integrationPageHtml, integrationsIndexHtml } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 
@@ -352,14 +352,23 @@ app.use((req, res, next) => {
   res.redirect(301, target);
 });
 
-// Content-negotiated index: browsers (Accept: text/html) get the human
-// homepage rendered from HOME.md; agents and curl (Accept: */*) keep getting
-// the self-documenting JSON that llms.txt and existing tooling point at.
+// `/terms/` -> `/terms` (public pages only; strict routing stays on for everything else).
+app.use((req, res, next) => {
+  const q = req.originalUrl.indexOf("?");
+  const target = trailingSlashRedirect({ method: req.method, path: req.path, search: q < 0 ? "" : req.originalUrl.slice(q) });
+  if (target === null) return next();
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.redirect(301, target);
+});
+
+// Content-negotiated index: the human homepage for everyone, including
+// crawlers that send `*/*` or no Accept; the self-documenting JSON only for a
+// client that explicitly asks for `application/json` (explicitlyWantsJson).
 app.get("/", (req, res) => {
   // Same URL, two representations: caches and crawlers must key on Accept.
   res.vary("Accept");
   const home = homePageHtml(cfg, publicStats(store));
-  if (home !== null && req.accepts(["json", "html"]) === "html") {
+  if (home !== null && !explicitlyWantsJson(req.header("accept"))) {
     htmlPage(home, res, "/");
     return;
   }
@@ -410,6 +419,16 @@ const htmlPage = (html: string | null, res: express.Response, path: string): voi
 app.get("/terms", (_req, res) => htmlPage(termsPageHtml(cfg), res, "/terms"));
 app.get("/privacy", (_req, res) => htmlPage(privacyPageHtml(cfg), res, "/privacy"));
 app.get("/contact", (_req, res) => htmlPage(contactPageHtml(cfg), res, "/contact"));
+// One page per framework package, rendered from its docs copy (pages.ts).
+app.get("/integrations", (_req, res) => htmlPage(integrationsIndexHtml(cfg), res, "/integrations"));
+app.get("/integrations/:name", (req, res) => {
+  const name = req.params.name;
+  if (integrationByName(name) === undefined) {
+    res.status(404).json({ error: "Unknown integration. The list is at /integrations" });
+    return;
+  }
+  htmlPage(integrationPageHtml(cfg, name), res, `/integrations/${name}`);
+});
 
 app.get("/robots.txt", (_req, res) => {
   res.type("text/plain; charset=utf-8").send(robotsTxt(cfg));

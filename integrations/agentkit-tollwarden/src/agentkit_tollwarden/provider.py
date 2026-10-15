@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Callable, Dict, Optional
 
 try:
     from coinbase_agentkit import ActionProvider, WalletProvider, create_action
@@ -15,6 +15,29 @@ except ImportError as e:  # pragma: no cover
     ) from e
 
 from tollwarden import TollWardenClient
+
+
+# ---------------------------------------------------------------------------
+# Shared by the scan action and guarded_payment
+# ---------------------------------------------------------------------------
+def _with_payer(payment: Dict[str, Any], wallet_provider: Any) -> Dict[str, Any]:
+    """A copy of the payment with `payer` filled from the agent's AgentKit wallet
+    when the caller didn't set one. Idiomatic AgentKit touch, because it scopes
+    velocity limits to the agent's own wallet. Best-effort, never raises."""
+    payment = dict(payment)
+    if not payment.get("payer") and wallet_provider is not None:
+        try:
+            addr = wallet_provider.get_address()
+            if addr:
+                payment["payer"] = addr
+        except Exception:  # noqa: BLE001 — wallet address is best-effort
+            pass
+    return payment
+
+
+def _provenance(content: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Scan context for the text the agent read before deciding to pay, if any."""
+    return {"origin": "tool_result", "content": content} if content else None
 
 
 # ---------------------------------------------------------------------------
@@ -64,18 +87,8 @@ class TollWardenActionProvider(ActionProvider):
 
     @create_action(name="tollwarden_scan_payment", description=_SCAN_DESC, schema=ScanPaymentSchema)
     def scan_payment(self, wallet_provider: Any, args: dict[str, Any]) -> str:
-        payment = dict(args.get("payment") or {})
-        # Idiomatic AgentKit touch: scope velocity limits to the agent's own
-        # wallet by auto-filling the payer when the caller didn't set one.
-        if not payment.get("payer"):
-            try:
-                addr = wallet_provider.get_address()
-                if addr:
-                    payment["payer"] = addr
-            except Exception:  # noqa: BLE001 — wallet address is best-effort
-                pass
-        content = args.get("content")
-        context = {"origin": "tool_result", "content": content} if content else None
+        payment = _with_payer(args.get("payment") or {}, wallet_provider)
+        context = _provenance(args.get("content"))
         direction = args.get("direction") or "outgoing"
         fn = self._client.scan_outgoing if direction != "incoming" else self._client.scan_incoming
         scan = fn(payment, expected_price_usd=args.get("expected_price_usd"), context=context)
@@ -124,3 +137,43 @@ def tollwarden_action_provider(
     return TollWardenActionProvider(
         client or TollWardenClient(base_url=base_url, api_key=api_key, agent_id=agent_id)
     )
+
+
+def guarded_payment(
+    pay_fn: Callable[[Dict[str, Any]], Any],
+    client: TollWardenClient,
+    strict: bool = False,
+    wallet_provider: Optional[Any] = None,
+) -> Callable[..., str]:
+    """Wrap a payment executor so it scans BEFORE paying and refuses blocks.
+
+    Returns a callable (payment, expected_price_usd=None, content=None) -> JSON
+    string. On a block verdict (or a flag with strict=True) it raises
+    TollWardenBlockedError and pay_fn is NEVER invoked, so enforcement holds by
+    construction rather than by prompt.
+
+    AgentKit has no hook that sees what the agent read, so pass that text as
+    `content` to run the prompt-injection check. With `wallet_provider`, the
+    scan's `payer` is filled from the agent's wallet as the scan action does.
+    pay_fn always receives the payment exactly as given.
+    """
+
+    def _guarded(
+        payment: Dict[str, Any],
+        expected_price_usd: Optional[float] = None,
+        content: Optional[str] = None,
+    ) -> str:
+        scan = client.guard_outgoing(
+            _with_payer(payment, wallet_provider),
+            strict=strict,
+            expected_price_usd=expected_price_usd,
+            context=_provenance(content),
+        )
+        result = pay_fn(payment)
+        return json.dumps(
+            {"paid": True, "verdict": scan["verdict"], "scan_id": scan["scan_id"], "result": result},
+            default=str,
+        )
+
+    _guarded.__name__ = getattr(pay_fn, "__name__", "payment") + "_tollwarden_guarded"
+    return _guarded

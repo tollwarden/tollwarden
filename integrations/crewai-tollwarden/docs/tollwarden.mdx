@@ -5,7 +5,7 @@ description: Scan x402 payments for safety before your CrewAI agent settles them
 
 # `crewai-tollwarden`
 
-[TollWarden](https://tollwarden.com) is a payment security firewall for [x402](https://x402.org) micropayments. Agents that pay for APIs and data over x402 get drained in predictable ways: payments triggered by prompt-injected content, replayed authorizations, inflated prices, secrets leaking through payment metadata, lookalike tokens, and address poisoning. `crewai-tollwarden` gives a CrewAI crew an allow / flag / block verdict on every payment before it settles — plus a tool-call hook that makes TollWarden's strongest detector work automatically.
+[TollWarden](https://tollwarden.com) is a payment security firewall for [x402](https://x402.org) micropayments. Agents that pay for APIs and data over x402 get drained in predictable ways, through payments triggered by prompt-injected content, replayed authorizations, inflated prices, secrets leaking through payment metadata, lookalike tokens, and address poisoning. `crewai-tollwarden` gives a CrewAI crew an allow / flag / block verdict on every payment before it settles, plus a tool-call hook that makes TollWarden's strongest detector work automatically.
 
 ## Installation
 
@@ -33,27 +33,27 @@ agent = Agent(
 
 ## Why the provenance registration matters
 
-TollWarden's strongest check catches payments whose *decision* came from content the agent just read (a prompt-injected page or tool result). `register_tollwarden_provenance` installs a CrewAI **after-tool-call hook** that observes every tool output automatically, so the next scan is provenance-tagged and that check runs with real input — no prompt engineering required. TollWarden's own tool outputs are excluded so verdicts never pollute the signal. CrewAI's tool-call hooks are process-global; call this once.
+TollWarden's strongest check catches payments whose *decision* came from content the agent just read (a prompt-injected page or tool result). `register_tollwarden_provenance` installs a CrewAI **after-tool-call hook** that observes every tool output automatically, so the next scan is provenance-tagged and that check runs with real input. No prompt engineering required. TollWarden's own tool outputs are excluded so verdicts never pollute the signal. CrewAI's tool-call hooks are process-global; call this once.
 
 ## The toolset
 
-- **`tollwarden_scan_payment`** — call before settling any x402 payment (`direction="outgoing"`) or before paying a received 402 offer (`direction="incoming"`). Returns `allow` / `flag` / `block` with per-check reasons and an Ed25519-signed verdict.
-- **`tollwarden_check_reputation`** — check community reports on a counterparty wallet before dealing with it.
-- **`tollwarden_report_counterparty`** — report a bad counterparty (always free) to warn other agents.
+- **`tollwarden_scan_payment`** screens a payment before your crew settles it (`direction="outgoing"`) or before it pays a received 402 offer (`direction="incoming"`). Returns `allow` / `flag` / `block` with per-check reasons and an Ed25519-signed verdict.
+- **`tollwarden_check_reputation`** checks community reports on a counterparty wallet before dealing with it.
+- **`tollwarden_report_counterparty`** reports a bad counterparty (always free) to warn other agents.
 
-## Enforcement: payments that cannot execute when blocked
+## Payments that cannot execute when blocked
 
 ```python
 from crewai_tollwarden import guarded_payment
 
 safe_pay = guarded_payment(execute_x402_payment, tollwarden)
-# raises TollWardenBlockedError on a block verdict — the executor is never called
+# raises TollWardenBlockedError on a block verdict; the executor is never called
 ```
 
 Build your CrewAI payment tool's `_run` from `safe_pay`. For wallet-level enforcement (the signer itself refuses unscanned payments), see `TollWardenEnforcer` in the [tollwarden SDK](https://pypi.org/project/tollwarden/).
 
 ## Reference
 
-- Package: [crewai-tollwarden on PyPI](https://pypi.org/project/crewai-tollwarden/) · [source](https://github.com/tollwarden/tollwarden/tree/main/integrations/crewai-tollwarden)
-- Service: [TollWarden API](https://tollwarden.com/llms.txt) · [OpenAPI](https://tollwarden.com/openapi.json)
-- TollWarden is advisory and non-custodial — it never touches keys, wallets, or funds.
+- The [crewai-tollwarden package on PyPI](https://pypi.org/project/crewai-tollwarden/) and its [source](https://github.com/tollwarden/tollwarden/tree/main/integrations/crewai-tollwarden)
+- The service's [integration guide](https://tollwarden.com/llms.txt) and [OpenAPI contract](https://tollwarden.com/openapi.json)
+- TollWarden is advisory and non-custodial. It never touches keys, wallets, or funds.

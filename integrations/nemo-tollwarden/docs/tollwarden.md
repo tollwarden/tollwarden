@@ -1,6 +1,6 @@
 # TollWarden
 
-[TollWarden](https://tollwarden.com) is a payment security firewall for [x402](https://x402.org) micropayments. `nemo-tollwarden` registers three NeMo Agent Toolkit functions that let a workflow screen every x402 payment before it settles — with prompt-injection provenance detection and Ed25519-signed, payment-bound verdicts.
+[TollWarden](https://tollwarden.com) is a payment security firewall for [x402](https://x402.org) micropayments. `nemo-tollwarden` registers three NeMo Agent Toolkit functions that let a workflow screen every x402 payment before it settles, with prompt-injection provenance detection and Ed25519-signed, payment-bound verdicts.
 
 ## Install
 
@@ -27,14 +27,28 @@ A free API key (100 free scans) is auto-minted on first use; set `api_key:` to p
 
 ## Functions
 
-- **`tollwarden_scan_payment`** — call before settling an x402 payment (`direction="outgoing"`) or before paying a received 402 offer (`direction="incoming"`). Returns `allow` / `flag` / `block` with per-check reasons. Pass the optional **`content`** argument (the page/tool text the agent just read) to enable prompt-injection-triggered-payment detection.
-- **`tollwarden_check_reputation`** — check community reports on a counterparty wallet before dealing with it.
-- **`tollwarden_report_counterparty`** — report a bad counterparty (always free).
+- **`tollwarden_scan_payment`** screens a payment before the workflow settles it (`direction="outgoing"`) or before it pays a received 402 offer (`direction="incoming"`). Returns `allow` / `flag` / `block` with per-check reasons. Pass the optional **`content`** argument (the page/tool text the agent just read) to enable prompt-injection-triggered-payment detection.
+- **`tollwarden_check_reputation`** checks community reports on a counterparty wallet before dealing with it.
+- **`tollwarden_report_counterparty`** reports a bad counterparty (always free).
 
 The three functions share one TollWarden client per `(base_url, api_key, agent_id)`.
 
+## Enforce the verdict
+
+The scan function returns a verdict the model can ignore. To make a blocked payment impossible instead, wrap the workflow's payment executor (sync or async).
+
+```python
+from nemo_tollwarden import guarded_payment
+
+safe_pay = guarded_payment(execute_x402_payment, tollwarden)
+await safe_pay(payment, content=page_text)
+# raises TollWardenBlockedError on a block verdict; the executor is never called
+```
+
+Pass `content` (the text the agent read before deciding to pay) so the prompt-injection check runs. `strict=True` refuses flags too.
+
 ## Reference
 
-- Package: [nemo-tollwarden on PyPI](https://pypi.org/project/nemo-tollwarden/) · [source](https://github.com/tollwarden/tollwarden/tree/main/integrations/nemo-tollwarden)
-- Service: [TollWarden API](https://tollwarden.com/llms.txt) · [OpenAPI](https://tollwarden.com/openapi.json)
-- TollWarden is advisory and non-custodial — it never touches keys, wallets, or funds.
+- The [nemo-tollwarden package on PyPI](https://pypi.org/project/nemo-tollwarden/) and its [source](https://github.com/tollwarden/tollwarden/tree/main/integrations/nemo-tollwarden)
+- The service's [integration guide](https://tollwarden.com/llms.txt) and [OpenAPI contract](https://tollwarden.com/openapi.json)
+- TollWarden is advisory and non-custodial. It never touches keys, wallets, or funds.
