@@ -38,4 +38,4 @@ from .provider import TollWardenActionProvider, guarded_payment, tollwarden_acti
 
 __all__ = ["TollWardenActionProvider", "guarded_payment", "tollwarden_action_provider", "__version__"]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

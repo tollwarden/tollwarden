@@ -17,7 +17,7 @@ TollWarden is advisory and non-custodial — it never touches keys, wallets, or 
 """
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Importing the register module runs the @register_function decorators. The
 # nat.components entry point in pyproject.toml points here so the toolkit loads

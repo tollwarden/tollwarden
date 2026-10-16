@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nemo-tollwarden"
-version = "0.1.0"
+version = "0.1.1"
 description = "TollWarden payment security for the NVIDIA NeMo Agent Toolkit: scan x402 payments before settling, with prompt-injection provenance and signed verdicts. Registers scan / reputation / report functions."
 readme = "README.md"
 requires-python = ">=3.11"
