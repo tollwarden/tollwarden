@@ -57,7 +57,7 @@ import { approvePageHtml } from "./approvepage.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
 import { handleOutcomeReport } from "./outcomes.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, SITE_ICONS, legacyHostRedirect, trailingSlashRedirect, explicitlyWantsJson, publicPageCsp, integrationByName, integrationPageHtml, integrationsIndexHtml } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, SITE_ICONS, legacyHostRedirect, trailingSlashRedirect, explicitlyWantsJson, publicPageCsp, integrationByName, integrationPageHtml, integrationsIndexHtml, guideBySlug, guidePageHtml, guidesIndexHtml } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 
@@ -401,9 +401,10 @@ app.get("/.well-known/llms.txt", (_req, res) => {
   res.type("text/plain; charset=utf-8").send(llmsTxt(cfg));
 });
 
-// Public pages (/, /terms, /privacy, /contact). Static HTML; the only scripts
-// are the opt-in analytics snippets (when GA_MEASUREMENT_ID is set), which
-// publicPageCsp allows by hash.
+// Public pages (/, /terms, /privacy, /contact, /integrations, /guides).
+// Static HTML; the only scripts that run are the opt-in analytics snippets
+// (when GA_MEASUREMENT_ID is set), which publicPageCsp allows by hash. The
+// operator origin's JSON-LD blocks are data, never executed.
 const htmlPage = (html: string | null, res: express.Response, path: string): void => {
   if (html === null) {
     res.status(404).json({ error: "Document not available in this deployment" });
@@ -428,6 +429,16 @@ app.get("/integrations/:name", (req, res) => {
     return;
   }
   htmlPage(integrationPageHtml(cfg, name), res, `/integrations/${name}`);
+});
+// Long-form guides, rendered from guides/<slug>.md (pages.ts).
+app.get("/guides", (_req, res) => htmlPage(guidesIndexHtml(cfg), res, "/guides"));
+app.get("/guides/:slug", (req, res) => {
+  const slug = req.params.slug;
+  if (guideBySlug(slug) === undefined) {
+    res.status(404).json({ error: "Unknown guide. The list is at /guides" });
+    return;
+  }
+  htmlPage(guidePageHtml(cfg, slug), res, `/guides/${slug}`);
 });
 
 app.get("/robots.txt", (_req, res) => {

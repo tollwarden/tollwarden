@@ -8,6 +8,8 @@ TollWarden is one HTTP call that stands between your agent and settlement. Befor
 
 TollWarden is **advisory** and **non-custodial**: it never touches your keys, your wallet, or your funds. It inspects the payment; your systems decide.
 
+The [AI agent payment security guide](https://tollwarden.com/guides/ai-agent-payment-security) walks through each failure mode above and the check that stops it. How the injection detector scores on its own eval set is in the [prompt-injection benchmark](https://tollwarden.com/guides/prompt-injection-benchmark).
+
 ## What a scan catches
 
 - **Prompt-injection-triggered payments** — the strongest check. If the payee address arrived in content your agent just read (a web page, a tool result), that payment is blocked. Detection survives HTML/markdown markup, base64/hex encoding, invisible Unicode, homoglyphs, leetspeak, and multilingual override phrasing.

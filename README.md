@@ -4,7 +4,7 @@
 
 [![x402](https://img.shields.io/badge/x402-v2-blue)](https://github.com/x402-foundation/x402)
 [![network](https://img.shields.io/badge/settles%20on-Base%20(USDC)-0052FF)](https://docs.cdp.coinbase.com/x402/quickstart-for-sellers)
-[![tests](https://img.shields.io/badge/tests-767%2F767-brightgreen)](test/run-tests.ts)
+[![tests](https://img.shields.io/badge/tests-799%2F799-brightgreen)](test/run-tests.ts)
 [![npm](https://img.shields.io/npm/v/@tollwarden/client?label=sdk)](https://www.npmjs.com/package/@tollwarden/client)
 [![license](https://img.shields.io/badge/license-BUSL--1.1-lightgrey)](LICENSE)
 
@@ -53,6 +53,8 @@ Building on an agent framework? TollWarden ships drop-in packages that give your
 Each exposes the same three tools (scan / check reputation / report) and a framework-native way to feed what the agent read into injection detection. LangChain uses a callback, CrewAI an after-tool-call hook and the Vercel AI SDK an `onStepFinish` handler, and all three tag it automatically. NeMo and AgentKit take it as an explicit `content` argument, and the AgentKit action also fills in the payer from the agent's own wallet. Every package also ships a `guarded_payment` / `guardedPayment` wrapper for enforcement by construction (the payment executor never runs on a block verdict), and the NeMo one accepts an async executor. See each package's README for the two-line setup, or its page under [tollwarden.com/integrations](https://tollwarden.com/integrations).
 
 ## What it catches
+
+The [AI agent payment security guide](https://tollwarden.com/guides/ai-agent-payment-security) walks through the attacks these checks answer, one failure mode at a time, with each check's limits.
 
 **Core detectors**
 
@@ -242,7 +244,7 @@ npm install
 
 npm run dev            # local dev server — payments off
 npm run demo:replay    # replay-attack demo: fresh nonce ALLOW → reused nonce BLOCK
-npm test               # 767-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
+npm test               # 799-test detector + hardening + plans + audit-log + dashboard + key-lifecycle + approvals + outcomes suite
 npm run eval           # detection eval corpus: attack payloads + benign FP guards, graded via real scans (gates CI + publish)
 ```
 
@@ -344,7 +346,7 @@ src/
   commitment.ts   Payment hashing (attestation binding + audit digest)
 mcp/server.ts     MCP server (12 tools — npx tollwarden)
 examples/         replay-demo.ts — reused-nonce attack blocked end-to-end
-test/             767-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
+test/             799-test suite (detectors, hardening, plans, crypto, audit, dashboards, key lifecycle, approvals, outcomes — npm test)
 eval/             detection eval corpus + runner (attacks must catch, benign must pass — npm run eval, gates CI)
 sdk/              TypeScript client SDK + wallet enforcement kit + payment-path wrapper (npm: @tollwarden/client, 147 tests)
 sdk-python/       Python client SDK + wallet enforcement kit + payment-path wrapper (PyPI: tollwarden, 153 tests)
@@ -359,7 +361,7 @@ Design notes: verdicts aggregate worst-first (any block ⇒ block); `risk_score`
 - **Threat model — what holds against whom.** Two attacker tiers matter, and they are not the same:
   - A **confused agent** — a prompt-injected model still making tool calls through its normal harness — is what TollWarden is built for. Detection catches manipulated payments; velocity and spend caps, first-contact limits, and merchant pinning are computed server-side from observed scans, so they bind on every scanned payment no matter what the model believes; and `guardSigner` closes the skip-scanning hole at the wallet, because the wrapped signer recomputes the commitment from the typed data actually being signed and refuses without a fresh allow-verdict — with optional local policy (recipient allowlist + spend caps) bounding even approved payments. (`context.origin` is self-declared, so an agent that lies about provenance weakens the content tier — the caps, pinning, and signer enforcement don't depend on it.)
   - A **compromised process** — attacker code running where the wallet's private key is readable — defeats any in-process wrapper, including our enforcer: it can sign with the raw key and never touch TollWarden. TollWarden is non-custodial and never holds your key, which also means it cannot protect a key your own process exposes. For this tier the mitigation is key isolation — keep the signer in a separate process, KMS, or hardware, and run the enforcer at that boundary so nothing inside the agent process can produce a signature. (The auto-minted `psk_` API key is a scan credential only: it can spend your TollWarden quota, never your funds.)
-- **Honest limitations:** injection detection is heuristic, not semantic; novel phrasings can evade the content tier (our public eval corpus tracks known gaps). The reputation registry accepts unauthenticated reports and should be treated as a signal, not ground truth.
+- **Honest limitations:** injection detection is heuristic, not semantic; novel phrasings can evade the content tier (our public eval corpus tracks known gaps, and the [prompt-injection benchmark](https://tollwarden.com/guides/prompt-injection-benchmark) publishes its results along with what our own corpus can't show). The reputation registry accepts unauthenticated reports and should be treated as a signal, not ground truth.
 
 ## Contributing
 

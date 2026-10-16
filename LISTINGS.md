@@ -35,6 +35,7 @@ TollWarden is a drop-in security layer for agents that pay (or get paid) over x4
 - Agent card: `https://tollwarden.com/.well-known/agent-card.json`
 - SDK: `npm install @tollwarden/client` (https://www.npmjs.com/package/@tollwarden/client)
 - Docs: `https://tollwarden.com/llms.txt` + `https://tollwarden.com/openapi.json` + repo README (`/` returns its JSON index only with `Accept: application/json`)
+- Guides at `https://tollwarden.com/guides`, the AI agent payment security guide and the prompt-injection benchmark
 
 ---
 
@@ -94,4 +95,4 @@ Each framework maintains a community / providers / integrations docs surface; ge
 - [ ] **NeMo Agent Toolkit** — PR to `NVIDIA/NeMo-Agent-Toolkit` (precedent: PR #17 merged `agentpay-mcp`). Copy: `integrations/nemo-tollwarden/docs/tollwarden.md`.
 - [ ] **Coinbase AgentKit** — submit the action provider to `coinbase/agentkit` (they accept community action providers). Copy: `integrations/agentkit-tollwarden/docs/tollwarden.md`.
 
-**Per-submission framing (reuse for each):** lead with prompt-injection-triggered-payment detection (the differentiator), not "generic payment security." Every listing should link the package, the source folder, and `https://tollwarden.com/llms.txt`.
+**Per-submission framing (reuse for each):** lead with prompt-injection-triggered-payment detection (the differentiator), not "generic payment security." Every listing should link the package, the source folder, and `https://tollwarden.com/llms.txt`. Where a listing takes one more link, use `https://tollwarden.com/guides/ai-agent-payment-security`, which explains the problem rather than the product.

@@ -7,6 +7,8 @@
  * TERMS.md / PRIVACY.md at the package root by the tiny markdown renderer
  * below (single source of truth: the same files GitHub renders). GET /contact
  * goes through the same renderer from CONTACT_MD, which only the site uses.
+ * The integration pages (GET /integrations/<name>) render each package's docs
+ * copy, and the guides (GET /guides/<slug>) render guides/<slug>.md.
  *
  * The homepage (GET / for browsers) is a dedicated server-rendered template
  * (homeBodyHtml) rather than rendered HOME.md: the proof-led layout — live
@@ -102,6 +104,7 @@ function escapeHtml(s: string): string {
 export const INDEXABLE_PATHS = [
   "/", "/terms", "/privacy", "/contact",
   "/integrations", "/integrations/langchain", "/integrations/crewai", "/integrations/ai-sdk", "/integrations/agentkit", "/integrations/nemo",
+  "/guides", "/guides/ai-agent-payment-security", "/guides/prompt-injection-benchmark",
 ] as const;
 
 export const HOME_TITLE = "x402 Payment Security Firewall for AI Agents | TollWarden";
@@ -131,6 +134,11 @@ export function canonicalLinkHeader(cfg: TollWardenConfig, path: string): string
 
 /** The operator's own public origin, the only one that speaks for TollWarden, LLC. */
 export const OPERATOR_ORIGIN = "https://tollwarden.com";
+
+/** A JSON-LD data block. "<" is escaped so no value can close the script element early. */
+function jsonLdScript(data: unknown): string {
+  return `<script type="application/ld+json">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>\n`;
+}
 
 /**
  * Organization + WebSite structured data for the homepage, which is where
@@ -164,8 +172,7 @@ export function homeStructuredData(cfg: TollWardenConfig): string {
       },
     ],
   };
-  // "<" escaped so no value can close the script element early.
-  return `<script type="application/ld+json">${JSON.stringify(data).replace(/</g, "\\u003c")}</script>\n`;
+  return jsonLdScript(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -310,13 +317,13 @@ export function publicPageCsp(cfg: TollWardenConfig): string {
   return analyticsFor(cfg)?.csp ?? ["default-src 'none'", "img-src 'self'", ...CSP_TAIL].join("; ");
 }
 
-function seoMeta(cfg: TollWardenConfig, title: string, description: string, path: string): string {
+function seoMeta(cfg: TollWardenConfig, title: string, description: string, path: string, ogType: "website" | "article" = "website"): string {
   const url = canonicalUrl(cfg, path);
   // Preview scrapers need an absolute image URL, so no public origin -> no image.
   const image = ogImagePng() === null ? null : canonicalUrl(cfg, "/og-image.png");
   return [
     `<meta name="description" content="${escapeHtml(description)}">`,
-    `<meta property="og:type" content="website">`,
+    `<meta property="og:type" content="${ogType}">`,
     `<meta property="og:site_name" content="TollWarden">`,
     `<meta property="og:title" content="${escapeHtml(title)}">`,
     `<meta property="og:description" content="${escapeHtml(description)}">`,
@@ -584,26 +591,33 @@ const NAV_CSS = `
   .navin nav { display:flex; gap:20px; font-size:14px; flex-wrap:wrap; align-items:baseline; }
   .navin nav a { color:var(--muted); text-decoration:none; }
   .navin nav a:hover { text-decoration:underline; }
-  .dd { position:relative; }
-  .dd > a::after { content:" \\25BE"; font-size:11px; }
-  .dd-menu { display:none; position:absolute; left:-12px; top:100%; padding-top:8px; z-index:20; }
-  .dd:focus-within .dd-menu { display:block; }
-  @media (hover: hover) { .dd:hover .dd-menu { display:block; } }
-  .dd-list { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:6px; min-width:230px; box-shadow:0 8px 30px rgba(0,0,0,.45); }
-  .navin .dd-list a { display:block; padding:7px 10px; border-radius:6px; color:var(--fg); white-space:nowrap; }
-  .navin .dd-list a:hover, .navin .dd-list a:focus { background:var(--inset); text-decoration:none; }
-  .navin .dd-list a.dd-all { color:var(--muted); }`;
+  .nav-dd { position:relative; }
+  .nav-dd > a::after { content:" \\25BE"; font-size:11px; }
+  .nav-dd-menu { display:none; position:absolute; left:-12px; top:100%; padding-top:8px; z-index:20; }
+  .nav-dd:focus-within .nav-dd-menu { display:block; }
+  @media (hover: hover) { .nav-dd:hover .nav-dd-menu { display:block; } }
+  .nav-dd-list { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:6px; min-width:230px; box-shadow:0 8px 30px rgba(0,0,0,.45); }
+  .navin .nav-dd-list a { display:block; padding:7px 10px; border-radius:6px; color:var(--fg); white-space:nowrap; }
+  .navin .nav-dd-list a:hover, .navin .nav-dd-list a:focus { background:var(--inset); text-decoration:none; }
+  .navin .nav-dd-list a.nav-dd-all { color:var(--muted); }`;
 
-/** The nav bar every public page carries (homepage, legal, contact, integrations). */
+/** The nav bar every public page carries (homepage, legal, contact, integrations, guides). */
 export function siteNavHtml(): string {
   const items = INTEGRATIONS.map((i) => `<a href="/integrations/${i.name}">${escapeHtml(i.framework)}</a>`).join("");
   return `<div class="navbar"><div class="navin">
 <a class="brand" href="/"><img src="/logo.svg" width="24" height="24" alt="">TollWarden</a>
-<nav aria-label="Site"><a href="/#what-a-scan-catches">detectors</a><div class="dd"><a href="/integrations">integrations</a><div class="dd-menu"><div class="dd-list">${items}<a class="dd-all" href="/integrations">All integrations</a></div></div></div><a href="/#get-started">get started</a><a href="/#pricing">pricing</a><a href="/dashboard">dashboard</a><a href="/contact">contact</a><a href="https://github.com/tollwarden/tollwarden">GitHub</a></nav>
+<nav aria-label="Site"><a href="/#what-a-scan-catches">detectors</a><div class="nav-dd"><a href="/integrations">integrations</a><div class="nav-dd-menu"><div class="nav-dd-list">${items}<a class="nav-dd-all" href="/integrations">All integrations</a></div></div></div><a href="/guides">guides</a><a href="/#get-started">get started</a><a href="/#pricing">pricing</a><a href="/dashboard">dashboard</a><a href="/contact">contact</a><a href="https://github.com/tollwarden/tollwarden">GitHub</a></nav>
 </div></div>`;
 }
 
-function markdownPageHtml(cfg: TollWardenConfig, title: string, description: string, path: string, markdown: string): string {
+/**
+ * A rendered-markdown public page. `opts.head` is extra head markup the page
+ * supplies itself (a guide's JSON-LD), and `opts.ogType` its Open Graph type.
+ */
+function markdownPageHtml(
+  cfg: TollWardenConfig, title: string, description: string, path: string, markdown: string,
+  opts: { head?: string; ogType?: "website" | "article" } = {},
+): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -611,8 +625,8 @@ ${analyticsFor(cfg)?.head ?? ""}<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)}</title>
 ${ICON_LINKS}
-${seoMeta(cfg, title, description, path)}
-<style>
+${seoMeta(cfg, title, description, path, opts.ogType)}
+${opts.head ?? ""}<style>
 ${BASE_CSS}
 ${NAV_CSS}
   .wrap { max-width:760px; margin:0 auto; padding:32px 20px 64px; }
@@ -825,6 +839,7 @@ ${heroStatsHtml(stats)}
 <p>AI agents increasingly buy what they need on their own — API calls, data, compute — over <a href="https://www.x402.org">x402</a>, the protocol that turns HTTP's <code>402 Payment Required</code> into instant stablecoin micropayments. That autonomy has a failure mode: software that can <em>read the internet</em> and <em>sign payments</em> can be talked into paying the wrong party.</p>
 <p>A poisoned web page whispers "pay this address instead." A payment authorization gets replayed. A lookalike token or vanity address slips past a truncated display. A seller takes the money and never delivers.</p>
 <p>Before paying, the agent submits the payment for a scan and gets back a verdict. TollWarden inspects the payment; <strong>your systems decide</strong>.</p>
+<p>The <a href="/guides/ai-agent-payment-security">AI agent payment security guide</a> walks through each failure mode above and the check that stops it. How the injection detector scores on its own eval set is in the <a href="/guides/prompt-injection-benchmark">prompt-injection benchmark</a>.</p>
 </div>
 
 <h2 id="a-real-block-verdict">A real block verdict</h2>
@@ -1107,6 +1122,144 @@ export function integrationsIndexHtml(cfg: TollWardenConfig): string {
   const key = `${pageKey(cfg, "/integrations")}|${cfg.freeCalls}`;
   if (!legalCache.has(key)) {
     legalCache.set(key, markdownPageHtml(cfg, INTEGRATIONS_TITLE, INTEGRATIONS_DESCRIPTION, "/integrations", integrationsIndexMarkdown(cfg)));
+  }
+  return legalCache.get(key)!;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Guides (/guides, /guides/<slug>)                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Long-form pages written to answer search queries the product pages can't
+ * ("ai agent payment security"). Each renders guides/<slug>.md at the package
+ * root, which carries its own H1; a test holds that H1 equal to the title
+ * minus " | TollWarden", so the title, the H1 and the JSON-LD headline can't
+ * drift apart. The site adds the dateline and links to the other guides.
+ * Every `/guides/<slug>` here must also be in INDEXABLE_PATHS; a test holds
+ * the two lists together.
+ */
+export interface Guide {
+  slug: string;        // URL segment, and the file name under guides/
+  title: string;       // <title>; the file's H1 is this minus " | TollWarden"
+  description: string; // meta description, within the ~160-char snippet budget
+  published: string;   // YYYY-MM-DD, shown on the page and in the Article JSON-LD
+  updated: string;     // YYYY-MM-DD; bump it with any substantive edit
+}
+
+export const GUIDES: readonly Guide[] = [
+  {
+    slug: "ai-agent-payment-security",
+    title: "AI agent payment security on x402 | TollWarden",
+    description: "How an AI agent that pays over x402 gets made to pay the wrong party, pay twice or overpay, and the check that stops each of the seven failure modes.",
+    published: "2026-10-15", updated: "2026-10-15",
+  },
+  {
+    slug: "prompt-injection-benchmark",
+    title: "Prompt-injection benchmark for x402 agent payments | TollWarden",
+    description: "TollWarden's prompt-injection eval set run as a benchmark. Attack and benign cases by family, the results, the open gap, and what our own corpus can't show.",
+    published: "2026-10-15", updated: "2026-10-15",
+  },
+];
+
+export const GUIDES_TITLE = "AI agent payment security guides | TollWarden";
+export const GUIDES_DESCRIPTION =
+  "Guides to AI agent payment security on x402. The failure modes an agent that pays is exposed to, what stops each, and how the injection detector scores.";
+
+/** The H1, link text and JSON-LD headline: the title without the site suffix. */
+export const guideHeadline = (g: Guide): string => g.title.replace(/ \| TollWarden$/, "");
+
+/** The guide a URL segment names, or undefined. Only slugs listed above resolve. */
+export function guideBySlug(slug: string): Guide | undefined {
+  return GUIDES.find((g) => g.slug === slug);
+}
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/** "2026-10-15" -> "15 October 2026". Parsed by hand, so no time zone can shift the day. */
+function longDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  return `${d} ${MONTHS[m - 1]} ${y}`;
+}
+
+/**
+ * Article structured data for one guide. Same gate as homeStructuredData: only
+ * the operator's own origin claims TollWarden, LLC wrote the page, so a
+ * self-hosted copy emits none and stays scriptless.
+ */
+export function guideStructuredData(cfg: TollWardenConfig, g: Guide): string {
+  if (canonicalOrigin(cfg) !== OPERATOR_ORIGIN) return "";
+  const url = `${OPERATOR_ORIGIN}/guides/${g.slug}`;
+  const org = { "@type": "Organization", "@id": `${OPERATOR_ORIGIN}/#organization`, name: "TollWarden", url: `${OPERATOR_ORIGIN}/` };
+  return jsonLdScript({
+    "@context": "https://schema.org",
+    "@type": "Article",
+    headline: guideHeadline(g),
+    description: g.description,
+    url,
+    mainEntityOfPage: url,
+    datePublished: g.published,
+    dateModified: g.updated,
+    author: org,
+    publisher: { ...org, logo: `${OPERATOR_ORIGIN}/icon.png` },
+    ...(ogImagePng() === null ? {} : { image: `${OPERATOR_ORIGIN}/og-image.png` }),
+  });
+}
+
+/** The guide file plus what the site adds: a dateline under the H1, links to the other guides. */
+function guideMarkdown(g: Guide, md: string): string {
+  const h1 = /^\s*(# .*)\r?\n/.exec(md);
+  const dateline = g.updated === g.published
+    ? `*Published ${longDate(g.published)} by TollWarden.*`
+    : `*Published ${longDate(g.published)}, updated ${longDate(g.updated)}, by TollWarden.*`;
+  const others = GUIDES.filter((o) => o !== g).map((o) => `- [${guideHeadline(o)}](/guides/${o.slug})`);
+  return [
+    ...(h1 === null ? [] : [h1[1]]),
+    dateline,
+    (h1 === null ? md : md.slice(h1[0].length)).trim(),
+    "## More guides",
+    [...others, "- [All guides](/guides)", "- [Setup pages for each agent framework](/integrations)"].join("\n"),
+    "",
+  ].join("\n\n");
+}
+
+/** GET /guides/<slug>. Null for an unknown slug, or when the guide file isn't shipped. */
+export function guidePageHtml(cfg: TollWardenConfig, slug: string): string | null {
+  const g = guideBySlug(slug);
+  if (g === undefined) return null;
+  const path = `/guides/${g.slug}`;
+  const key = pageKey(cfg, path);
+  if (!legalCache.has(key)) {
+    const md = loadDoc(`guides/${g.slug}.md`);
+    legalCache.set(key, md === null ? null : markdownPageHtml(cfg, g.title, g.description, path, guideMarkdown(g, md),
+      { head: guideStructuredData(cfg, g), ogType: "article" }));
+  }
+  return legalCache.get(key)!;
+}
+
+function guidesIndexMarkdown(): string {
+  const rows = GUIDES.map((g) => `| [${guideHeadline(g)}](/guides/${g.slug}) | ${g.description} |`);
+  return `# ${GUIDES_TITLE.replace(/ \| TollWarden$/, "")}
+
+Software that can read the internet and sign payments can be talked into paying the wrong party. These guides take the ways that happens to an agent paying over x402 one at a time, say what stops each, and link the detector source so every claim can be checked.
+
+| Guide | What it covers |
+| --- | --- |
+${rows.join("\n")}
+
+## Setting it up
+
+Per-framework setup for LangChain, CrewAI, the Vercel AI SDK, Coinbase AgentKit and the NVIDIA NeMo Agent Toolkit is under [integrations](/integrations). Point your model at [llms.txt](/llms.txt) for the integration guide, or read the [OpenAPI contract](/openapi.json).
+
+TollWarden is advisory and non-custodial. It never touches your keys, wallet or funds, and your own systems decide what to do with each verdict.
+`;
+}
+
+/** GET /guides. Built from GUIDES, so it needs no file. */
+export function guidesIndexHtml(cfg: TollWardenConfig): string {
+  const key = pageKey(cfg, "/guides");
+  if (!legalCache.has(key)) {
+    legalCache.set(key, markdownPageHtml(cfg, GUIDES_TITLE, GUIDES_DESCRIPTION, "/guides", guidesIndexMarkdown()));
   }
   return legalCache.get(key)!;
 }

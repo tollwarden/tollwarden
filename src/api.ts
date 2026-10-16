@@ -643,6 +643,8 @@ export function serviceInfo(cfg: TollWardenConfig): ApiResult {
         "GET /contact": "Free. Contact addresses: general, security vulnerability reports, reputation disputes (human-readable).",
         "GET /integrations": "Free. Index of the framework packages (human-readable).",
         "GET /integrations/:name": "Free. Setup guide for one framework package, by name (langchain, crewai, ai-sdk, agentkit, nemo; human-readable).",
+        "GET /guides": "Free. Index of the long-form guides (human-readable).",
+        "GET /guides/:slug": "Free. One guide, by slug (ai-agent-payment-security: the failure modes an x402 agent faces and what stops each; prompt-injection-benchmark: the injection eval set's results and limits; human-readable).",
       },
       checks: [
         "pii: PII/secret detection on resource_url, description, reason, metadata",

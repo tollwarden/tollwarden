@@ -33,7 +33,7 @@ import { dashboardHtml } from "./dashboard.ts";
 import { adminDashboardHtml } from "./admindash.ts";
 import { approvePageHtml } from "./approvepage.ts";
 import { llmsTxt } from "./llms.ts";
-import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, legacyHostRedirect, trailingSlashRedirect, explicitlyWantsJson, publicPageCsp, integrationByName, integrationPageHtml, integrationsIndexHtml } from "./pages.ts";
+import { homePageHtml, termsPageHtml, privacyPageHtml, contactPageHtml, canonicalLinkHeader, robotsTxt, sitemapXml, NOINDEX, ogImagePng, siteIcon, legacyHostRedirect, trailingSlashRedirect, explicitlyWantsJson, publicPageCsp, integrationByName, integrationPageHtml, integrationsIndexHtml, guideBySlug, guidePageHtml, guidesIndexHtml } from "./pages.ts";
 import { publicStats } from "./pubstats.ts";
 import { handleTrustEvaluate } from "./trust.ts";
 import { handleApprovalDecide, handleApprovalInspect, handleApprovalPoll } from "./approvals.ts";
@@ -202,6 +202,25 @@ const server = createServer(async (req, res) => {
         : integrationByName(name) === undefined ? undefined
         : integrationPageHtml(cfg, name);
       if (html === undefined) out = { status: 404, body: { error: "Unknown integration. The list is at /integrations" } };
+      else if (html === null) out = { status: 404, body: { error: "Document not available in this deployment" } };
+      else {
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": publicPageCsp(cfg),
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+          ...canonicalHeader(path),
+        });
+        res.end(html);
+        return;
+      }
+    }
+    else if (method === "GET" && (path === "/guides" || path.startsWith("/guides/"))) {
+      const slug = path.slice("/guides/".length);
+      const html = path === "/guides" ? guidesIndexHtml(cfg)
+        : guideBySlug(slug) === undefined ? undefined
+        : guidePageHtml(cfg, slug);
+      if (html === undefined) out = { status: 404, body: { error: "Unknown guide. The list is at /guides" } };
       else if (html === null) out = { status: 404, body: { error: "Document not available in this deployment" } };
       else {
         res.writeHead(200, {

@@ -40,6 +40,8 @@ import { TollWardenEnforcer, TollWardenEnforcementError } from "../sdk/src/enfor
 import { TollWardenBlockedError, TollWardenClient } from "../sdk/src/index.ts";
 import { createServer as createHttpServer } from "node:http";
 import { INDEXABLE_PATHS, INTEGRATIONS, INTEGRATIONS_DESCRIPTION, integrationPageHtml, integrationsIndexHtml, integrationTitle, siteNavHtml } from "../src/pages.ts";
+import { GUIDES, GUIDES_DESCRIPTION, GUIDES_TITLE, guideHeadline, guidePageHtml, guidesIndexHtml } from "../src/pages.ts";
+import { CORPUS } from "../eval/corpus.ts";
 import type { ScanRequest, ScanResponse } from "../src/types.ts";
 
 const cfg = loadConfig({ TOLLWARDEN_MODE: "dev", PAY_TO: "0xtest" });
@@ -3806,7 +3808,7 @@ console.log("\n— search-engine metadata (head tags, robots.txt, sitemap.xml) �
   check("robots.txt omits the Sitemap line without a public origin", !robotsTxt(local).includes("Sitemap:"));
   const sitemap = sitemapXml(live);
   check("sitemap lists exactly the indexable pages",
-    (sitemap.match(/<loc>/g) ?? []).length === 10 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
+    (sitemap.match(/<loc>/g) ?? []).length === 13 && sitemap.includes("<loc>https://tollwarden.com/</loc>") && sitemap.includes("<loc>https://tollwarden.com/privacy</loc>")
       && sitemap.includes("<loc>https://tollwarden.com/contact</loc>")
       && !sitemap.includes("/dashboard") && !sitemap.includes("/admin") && !sitemap.includes("/approve"));
   check("sitemap is an empty urlset without a public origin", !sitemapXml(local).includes("<loc>"));
@@ -4085,6 +4087,103 @@ console.log("\n— public stats + self-measured uptime (/, /v1/stats) —");
     bare.includes('<div class="n">0</div>') && bare.includes("n/a") && bare.includes("seg-empty") && !bare.includes("{{"));
 }
 
+console.log("\n— guides (/guides, /guides/<slug>) —");
+{
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const live = { ...cfg, publicBaseUrl: "https://tollwarden.com" };
+  const selfHosted = { ...cfg, publicBaseUrl: "https://payments.example.org" };
+  const local = { ...cfg, publicBaseUrl: "http://localhost:4021" };
+  const paths = ["/guides", ...GUIDES.map((g) => `/guides/${g.slug}`)];
+  const body = (h: string): string => h.slice(h.indexOf('<div class="wrap">'), h.indexOf("<footer>"));
+  const files = GUIDES.map((g) => ({ g, md: readFileSync(new URL(`../guides/${g.slug}.md`, import.meta.url), "utf8") }));
+  const pages = GUIDES.map((g) => ({ g, html: guidePageHtml(live, g.slug)! }));
+  const index = guidesIndexHtml(live);
+  check("every guide is an indexable path, and every indexable /guides path is a listed guide",
+    paths.every((p) => (INDEXABLE_PATHS as readonly string[]).includes(p))
+      && INDEXABLE_PATHS.filter((p) => p.startsWith("/guides")).length === paths.length);
+  check("every file in guides/ is a listed guide (an unlisted draft would ship without a route)",
+    readdirSync(new URL("../guides/", import.meta.url)).filter((f) => f.endsWith(".md")).sort().join() === GUIDES.map((g) => `${g.slug}.md`).sort().join());
+  check("each guide file opens with its one H1, equal to the page title minus the site suffix",
+    files.every(({ g, md }) => md.startsWith(`# ${guideHeadline(g)}\n`) && (md.match(/^# /gm) ?? []).length === 1 && g.title === `${guideHeadline(g)} | TollWarden`));
+  check("each guide page renders its file under its own title, with a single H1 and the dateline from the registry",
+    pages.every(({ g, html }) => html !== null && html.includes(`<title>${g.title}</title>`) && (html.match(/<h1\b/g) ?? []).length === 1
+      && html.includes(`>${guideHeadline(g)}</h1>\n<p><em>Published `)));
+  check("guide titles fit a search result (≤ 65 chars) and descriptions the ~160-char snippet budget",
+    [GUIDES_TITLE, ...GUIDES.map((g) => g.title)].every((t) => t.length <= 65)
+      && [GUIDES_DESCRIPTION, ...GUIDES.map((g) => g.description)].every((d) => d.length <= 160));
+  check("guide dates are real calendar dates, and updated is never before published",
+    GUIDES.every((g) => [g.published, g.updated].every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && new Date(`${d}T00:00:00Z`).toISOString().startsWith(d)) && g.updated >= g.published));
+  check("each guide's og:url and canonical Link header name its own https URL, as an article",
+    pages.every(({ g, html }) => html.includes(`<meta property="og:url" content="https://tollwarden.com/guides/${g.slug}">`)
+      && html.includes('<meta property="og:type" content="article">')
+      && canonicalLinkHeader(live, `/guides/${g.slug}`) === `<https://tollwarden.com/guides/${g.slug}>; rel="canonical"`)
+      && index.includes('<meta property="og:type" content="website">') && index.includes('<meta property="og:url" content="https://tollwarden.com/guides">'));
+  check("guide copy carries no em dashes (files, rendered pages and the index)",
+    files.every(({ md }) => !md.includes("—")) && [index, ...pages.map((p) => p.html)].every((h) => !body(h).includes("—")));
+  check("guide pages are HTML-escaped markdown: renderer tags only, and no script besides the operator's JSON-LD",
+    [index, ...pages.map((p) => p.html)].every((h) => !withoutJsonLd(h).includes("<script")
+      && !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(withoutNav(withoutJsonLd(h))))));
+  const ld = pages.map(({ g, html }) => ({ g, m: html.match(new RegExp(JSON_LD.source, "g")) ?? [] }));
+  check("operator origin: each guide carries exactly one Article JSON-LD block matching its registry entry",
+    ld.every(({ g, m }) => {
+      if (m.length !== 1) return false;
+      const data = JSON.parse(JSON_LD.exec(m[0])![1]);
+      return data["@type"] === "Article" && data.headline === guideHeadline(g) && data.description === g.description
+        && data.url === `https://tollwarden.com/guides/${g.slug}` && data.mainEntityOfPage === data.url
+        && data.datePublished === g.published && data.dateModified === g.updated
+        && data.author.name === "TollWarden" && data.publisher.logo === "https://tollwarden.com/icon.png";
+    }));
+  check("no Article JSON-LD on the guides index, on a self-hosted https origin, or without a public origin",
+    !index.includes("<script") && GUIDES.every((g) => !guidePageHtml(selfHosted, g.slug)!.includes("<script") && !guidePageHtml(local, g.slug)!.includes("<script"))
+      && !guidesIndexHtml(local).includes("og:url"));
+  check("unknown, prototype-key, wrong-case and path-shaped slugs render nothing (the route 404s)",
+    ["nope", "", "__proto__", "constructor", "toString", "AI-Agent-Payment-Security", "ai-agent-payment-security/", "ai-agent-payment-security.md", "../TERMS"].every((n) => guidePageHtml(live, n) === null));
+  check("the index links every guide under its headline; each guide links the others, the index and the integrations",
+    GUIDES.every((g) => index.includes(`<a href="/guides/${g.slug}">${guideHeadline(g)}</a>`))
+      && pages.every(({ g, html }) => GUIDES.every((o) => o === g || html.includes(`href="/guides/${o.slug}"`)) && html.includes('href="/guides"') && html.includes('href="/integrations"')));
+  const routes = new Set<string>([...INDEXABLE_PATHS, "/llms.txt", "/openapi.json"]);
+  check("every root-relative link in the guides points at a real page",
+    [index, ...pages.map((p) => p.html)].every((h) => [...body(h).matchAll(/href="(\/[^"#?]*)/g)].every((m) => routes.has(m[1]))));
+  // The security guide cites detectors by check ID; each must be a literal the source emits.
+  const src = ["detectors/injection.ts", "detectors/replay.ts", "detectors/duplicate.ts", "detectors/overpayment.ts", "detectors/asset.ts", "detectors/poisoning.ts",
+    "detectors/pinning.ts", "detectors/pii.ts", "detectors/offerdrift.ts", "detectors/velocity.ts", "outcomes.ts"]
+    .map((f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8")).join("\n");
+  const cited = files.flatMap(({ md }) => [...md.matchAll(/`((?:injection|replay|overpay|asset|poison|pin|pii|drift|velocity|value|delivery)\.[a-z_]+)`/g)].map((m) => m[1]));
+  check("every check ID the guides cite is one the detectors actually emit",
+    cited.length >= 20 && cited.every((id) => src.includes(`id: "${id}"`) || (id.startsWith("pii.") && src.includes(`id: "${id.slice(4)}"`))),
+    cited.filter((id) => !src.includes(`id: "${id}"`) && !(id.startsWith("pii.") && src.includes(`id: "${id.slice(4)}"`))));
+  // The benchmark guide states corpus counts; they must be the corpus's.
+  const bench = files.find(({ g }) => g.slug === "prompt-injection-benchmark")!.md;
+  const gating = CORPUS.filter((c) => !c.known_gap);
+  const n = (f: (c: (typeof CORPUS)[number]) => boolean, from = gating) => from.filter(f).length;
+  const attacks = n((c) => c.kind === "attack"), benign = n((c) => c.kind === "benign");
+  const families = [...new Set(CORPUS.map((c) => `${c.kind}|${c.family}`))].map((k) => k.split("|") as ["attack" | "benign", string]);
+  check("the benchmark guide's case counts match eval/corpus.ts",
+    bench.includes(`The corpus has ${CORPUS.length} cases, ${n((c) => c.kind === "attack", CORPUS)} attacks and ${n((c) => c.kind === "benign", CORPUS)} benign.`)
+      && bench.includes(`| Attack must reach block | ${n((c) => c.kind === "attack" && c.expect === "block")} |`)
+      && bench.includes(`| Attack must reach at least flag | ${n((c) => c.kind === "attack" && c.expect === "flag")} |`)
+      && bench.includes(`| Benign must stay allow | ${n((c) => c.kind === "benign" && c.expect === "allow")} |`)
+      && bench.includes(`| Benign may flag but must not block | ${n((c) => c.kind === "benign" && c.expect === "flag")} |`)
+      && bench.includes(`| Known gap, tracked but not gating | ${CORPUS.length - gating.length} |`)
+      && bench.includes(`${attacks} of ${attacks} attacks detected and ${benign} of ${benign} benign cases`)
+      && families.every(([kind, fam]) => {
+        const all = CORPUS.filter((c) => c.kind === kind && c.family === fam);
+        const lead = all.filter((c) => !c.known_gap && c.expect === (kind === "attack" ? "block" : "allow")).length;
+        return bench.includes(`| \`${fam}\` | ${all.length} | ${lead} |`);
+      }));
+  const sitemap = sitemapXml(live);
+  check("sitemap lists the guides index and every guide", paths.every((p) => sitemap.includes(`<loc>https://tollwarden.com${p}</loc>`)));
+  const legacy = (path: string, search = "") => legacyHostRedirect(live, { method: "GET", host: "paysafe-agent.com", path, search, explicitJson: false });
+  check("guides on the old domain 301 to the canonical origin, query string preserved",
+    paths.every((p) => legacy(p) === `https://tollwarden.com${p}`) && legacy("/guides/prompt-injection-benchmark", "?ref=x") === "https://tollwarden.com/guides/prompt-injection-benchmark?ref=x");
+  check("an unknown guide on the old domain is not redirected (it 404s in place)", legacy("/guides/nope") === null);
+  check("a trailing slash on a guide 301s to the canonical path; an unknown one is left to 404",
+    paths.every((p) => trailingSlashRedirect({ method: "GET", path: `${p}/`, search: "" }) === p) && trailingSlashRedirect({ method: "GET", path: "/guides/nope/", search: "" }) === null);
+  const home = homePageHtml(live)!;
+  check("nav links the guides index, and the homepage links both guides",
+    siteNavHtml().includes('<a href="/guides">guides</a>') && GUIDES.every((g) => home.includes(`<a href="/guides/${g.slug}">`)));
+}
+
 console.log("\n— integration pages (/integrations, /integrations/<name>) —");
 {
   const live = { ...cfg, publicBaseUrl: "https://tollwarden.com" };
@@ -4132,15 +4231,19 @@ console.log("\n— integration pages (/integrations, /integrations/<name>) —")
   check("an unknown integration on the old domain is not redirected (it 404s in place)", legacy("/integrations/nope") === null);
   const home = homePageHtml(live)!;
   const nav = siteNavHtml();
-  const everyPage = [home, termsPageHtml(live)!, privacyPageHtml(live)!, contactPageHtml(live), index, ...pages.map((p) => p.html)];
+  const everyPage = [home, termsPageHtml(live)!, privacyPageHtml(live)!, contactPageHtml(live), index, ...pages.map((p) => p.html),
+    guidesIndexHtml(live), ...GUIDES.map((g) => guidePageHtml(live, g.slug)!)];
   check("every public page carries the one shared site nav, exactly once",
     everyPage.every((h) => h.split(nav).length === 2 && (h.match(/<nav\b/g) ?? []).length === 1));
   check("nav's integrations entry links the index and drops down to every integration page",
-    nav.includes('<div class="dd"><a href="/integrations">integrations</a><div class="dd-menu"><div class="dd-list">')
-      && INTEGRATIONS.every((i) => nav.includes(`<a href="/integrations/${i.name}">${i.framework}</a>`)) && nav.includes('<a class="dd-all" href="/integrations">All integrations</a>'));
+    nav.includes('<div class="nav-dd"><a href="/integrations">integrations</a><div class="nav-dd-menu"><div class="nav-dd-list">')
+      && INTEGRATIONS.every((i) => nav.includes(`<a href="/integrations/${i.name}">${i.framework}</a>`)) && nav.includes('<a class="nav-dd-all" href="/integrations">All integrations</a>'));
   check("dropdown is CSS-only: opens on keyboard focus anywhere, on hover only where the device can hover",
-    everyPage.every((h) => h.includes(".dd:focus-within .dd-menu { display:block; }") && h.includes("@media (hover: hover) { .dd:hover .dd-menu { display:block; } }")
-      && !/^\s*\.dd:hover/m.test(h)));
+    everyPage.every((h) => h.includes(".nav-dd:focus-within .nav-dd-menu { display:block; }") && h.includes("@media (hover: hover) { .nav-dd:hover .nav-dd-menu { display:block; } }")
+      && !/^\s*\.nav-dd:hover/m.test(h)));
+  check("nav dropdown classes are prefixed, so page content using .dd (the detector rows) can't pick up nav rules",
+    everyPage.every((h) => (h.match(/class="nav-dd"/g) ?? []).length === 1 && !/^\s*(?:@media[^{]*\{\s*)?\.dd[\s{>:]/m.test(h))
+      && home.includes('<p class="dd">'));
   check("nav's in-page links are root-relative so they work off the homepage",
     ["/#what-a-scan-catches", "/#get-started", "/#pricing"].every((t) => nav.includes(`href="${t}"`)) && !/href="#/.test(nav)
       && ["what-a-scan-catches", "get-started", "pricing"].every((id) => home.includes(`id="${id}"`)));
@@ -4203,6 +4306,21 @@ console.log("\n— integration pages (/integrations, /integrations/<name>) —")
       const map = await get(port, "/sitemap.xml");
       check(`${label}: sitemap.xml lists the integrations index and every integration page`,
         map.status === 200 && paths.every((p) => map.body.includes(`<loc>https://tollwarden.com${p}</loc>`)));
+      const guidePaths = ["/guides", ...GUIDES.map((g) => `/guides/${g.slug}`)];
+      const guidesOverHttp = await Promise.all(guidePaths.map((p) => get(port, p)));
+      check(`${label}: every guide is 200 HTML with its canonical Link header, the public-page CSP and (guides only) Article JSON-LD`,
+        guidesOverHttp.every((r, k) => r.status === 200 && /^text\/html/.test(String(r.headers["content-type"]))
+          && r.headers.link === `<https://tollwarden.com${guidePaths[k]}>; rel="canonical"` && r.headers["content-security-policy"] === publicPageCsp(live)
+          && r.body.includes('"@type":"Article"') === (k > 0)),
+        guidesOverHttp.map((r, k) => `${guidePaths[k]} ${r.status} ${r.headers.link}`));
+      const unknownGuides = await Promise.all(["/guides/nope", "/guides/__proto__", "/guides/AI-Agent-Payment-Security", "/guides/ai-agent-payment-security.md"].map((p) => get(port, p)));
+      check(`${label}: an unknown guide slug is a 404`, unknownGuides.every((r) => r.status === 404), unknownGuides.map((r) => r.status));
+      const movedGuide = await get(port, "/guides/ai-agent-payment-security?ref=x", { host: "paysafe-agent.com" });
+      check(`${label}: the old domain 301s a guide to the canonical origin`,
+        movedGuide.status === 301 && movedGuide.headers.location === "https://tollwarden.com/guides/ai-agent-payment-security?ref=x", [movedGuide.status, movedGuide.headers.location]);
+      const slashed = await get(port, "/guides/");
+      check(`${label}: /guides/ 301s to /guides`, slashed.status === 301 && slashed.headers.location === "/guides", [slashed.status, slashed.headers.location]);
+      check(`${label}: sitemap.xml lists the guides index and every guide`, guidePaths.every((p) => map.body.includes(`<loc>https://tollwarden.com${p}</loc>`)));
     } finally {
       if (child.exitCode === null && child.signalCode === null) {
         const exited = new Promise((r) => child.once("exit", r));

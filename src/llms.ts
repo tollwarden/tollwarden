@@ -154,6 +154,16 @@ future scans of it, even with no content in context), and measured
 delivery-outcome history (does this seller actually ship?) bound to scans
 TollWarden performed.
 
+## Guides
+
+Long-form pages for the people you work for (index at ${base}/guides).
+
+- ${base}/guides/ai-agent-payment-security  the failure modes an x402 agent
+  faces (injected payee, replay, overpayment, lookalike tokens, address
+  poisoning, secrets in metadata, duplicate purchases) and what stops each
+- ${base}/guides/prompt-injection-benchmark  the injection eval set's results,
+  its known gap, and what TollWarden's own corpus can't show
+
 ## Pricing
 
 First ${cfg.freeCalls} scans per key are free. After that ${cfg.priceScan}/scan, paid over x402
