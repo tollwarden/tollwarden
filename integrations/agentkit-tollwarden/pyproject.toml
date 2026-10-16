@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentkit-tollwarden"
-version = "0.1.0"
+version = "0.1.1"
 description = "TollWarden payment security for Coinbase AgentKit: a scan-before-you-pay action provider for x402 payments, with prompt-injection provenance and signed verdicts. Non-custodial."
 readme = "README.md"
 requires-python = ">=3.10"
