@@ -39,7 +39,7 @@ import { paymentFromOffer, wrapFetchWithTollWarden, type WrapFetchOptions } from
 import { TollWardenEnforcer, TollWardenEnforcementError } from "../sdk/src/enforce.ts";
 import { TollWardenBlockedError, TollWardenClient } from "../sdk/src/index.ts";
 import { createServer as createHttpServer } from "node:http";
-import { INDEXABLE_PATHS, INTEGRATIONS, INTEGRATIONS_DESCRIPTION, integrationPageHtml, integrationsIndexHtml, integrationTitle } from "../src/pages.ts";
+import { INDEXABLE_PATHS, INTEGRATIONS, INTEGRATIONS_DESCRIPTION, integrationPageHtml, integrationsIndexHtml, integrationTitle, siteNavHtml } from "../src/pages.ts";
 import type { ScanRequest, ScanResponse } from "../src/types.ts";
 
 const cfg = loadConfig({ TOLLWARDEN_MODE: "dev", PAY_TO: "0xtest" });
@@ -3721,6 +3721,8 @@ const ICON_TAGS = [
   '<img src="/logo.svg" width="24" height="24" alt="">',
 ];
 const withoutIcons = (h: string): string => ICON_TAGS.reduce((acc, t) => acc.split(t).join(""), h);
+// The shared site nav is template markup, not renderer output, so the renderer tag checks drop it first.
+const withoutNav = (h: string): string => h.split(siteNavHtml()).join("");
 // The operator homepage's one JSON-LD data block. `[^<]*` also asserts the JSON escapes "<".
 const JSON_LD = /<script type="application\/ld\+json">([^<]*)<\/script>\n/;
 const withoutJsonLd = (h: string): string => h.replace(JSON_LD, "");
@@ -3754,7 +3756,7 @@ console.log("\n— markdown pages (/, /terms, /privacy, /contact) —");
   // thereby licensing those same tags to escape the renderer via TERMS.md or
   // PRIVACY.md. The homepage gets its own tag-set check below instead.
   const rendered = [terms ?? "", privacy ?? "", contact];
-  check("markdown is HTML-escaped before inline markup", !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(rendered.join(""))));
+  check("markdown is HTML-escaped before inline markup", !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(rendered.map(withoutNav).join(""))));
   check("homepage markup stays inside the static template's tag set",
     !/<(?!\/?(?:html|head|meta|title|style|body|div|main|nav|footer|span|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(home ?? "")));
 }
@@ -4119,7 +4121,7 @@ console.log("\n— integration pages (/integrations, /integrations/<name>) —")
     ["nope", "", "__proto__", "constructor", "toString", "LangChain", "langchain/", "../TERMS.md"].every((n) => integrationPageHtml(live, n) === null));
   check("integration pages are HTML-escaped markdown: renderer tags only, no script, nothing external loads",
     [index, ...pages.map((p) => p.html)].every((h) => !h.includes("<script")
-      && !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(h))));
+      && !/<(?!\/?(?:html|head|meta|title|style|body|div|footer|h[1-3]|p|ul|li|a|code|pre|hr|strong|em|table|thead|tbody|tr|th|td)\b)[a-z]/i.test(withoutIcons(withoutNav(h)))));
   check("no og:url on integration pages without a public https origin",
     !integrationPageHtml(local, "langchain")!.includes("og:url") && !integrationsIndexHtml(local).includes("og:url"));
   const sitemap = sitemapXml(live);
@@ -4129,6 +4131,19 @@ console.log("\n— integration pages (/integrations, /integrations/<name>) —")
     paths.every((p) => legacy(p) === `https://tollwarden.com${p}`) && legacy("/integrations/crewai", "?ref=x") === "https://tollwarden.com/integrations/crewai?ref=x");
   check("an unknown integration on the old domain is not redirected (it 404s in place)", legacy("/integrations/nope") === null);
   const home = homePageHtml(live)!;
+  const nav = siteNavHtml();
+  const everyPage = [home, termsPageHtml(live)!, privacyPageHtml(live)!, contactPageHtml(live), index, ...pages.map((p) => p.html)];
+  check("every public page carries the one shared site nav, exactly once",
+    everyPage.every((h) => h.split(nav).length === 2 && (h.match(/<nav\b/g) ?? []).length === 1));
+  check("nav's integrations entry links the index and drops down to every integration page",
+    nav.includes('<div class="dd"><a href="/integrations">integrations</a><div class="dd-menu"><div class="dd-list">')
+      && INTEGRATIONS.every((i) => nav.includes(`<a href="/integrations/${i.name}">${i.framework}</a>`)) && nav.includes('<a class="dd-all" href="/integrations">All integrations</a>'));
+  check("dropdown is CSS-only: opens on keyboard focus anywhere, on hover only where the device can hover",
+    everyPage.every((h) => h.includes(".dd:focus-within .dd-menu { display:block; }") && h.includes("@media (hover: hover) { .dd:hover .dd-menu { display:block; } }")
+      && !/^\s*\.dd:hover/m.test(h)));
+  check("nav's in-page links are root-relative so they work off the homepage",
+    ["/#what-a-scan-catches", "/#get-started", "/#pricing"].every((t) => nav.includes(`href="${t}"`)) && !/href="#/.test(nav)
+      && ["what-a-scan-catches", "get-started", "pricing"].every((id) => home.includes(`id="${id}"`)));
   check("homepage links the integrations index and every integration page",
     home.includes('<a href="/integrations">') && INTEGRATIONS.every((i) => home.includes(`<a href="/integrations/${i.name}">`)));
 

@@ -569,6 +569,40 @@ const BASE_CSS = `
   .consent-actions button:hover { border-color:var(--accent); }
   [hidden] { display:none !important; }`;
 
+// ---------------------------------------------------------------------------
+// Site nav, shared by every public page. The integrations entry is a link to
+// /integrations that also opens a CSS-only dropdown: on hover where the device
+// can hover, and on keyboard focus anywhere (:focus-within), so the pages stay
+// scriptless. A touch device without hover follows the link to the index.
+// In-page targets are root-relative (/#pricing) so they work from any page.
+// ---------------------------------------------------------------------------
+const NAV_CSS = `
+  .navbar { border-bottom:1px solid var(--line); }
+  .navin { max-width:840px; margin:0 auto; padding:14px 20px; display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+  .navin .brand { color:var(--fg); font-weight:600; font-size:16px; text-decoration:none; }
+  .navin .brand img { vertical-align:-6px; margin-right:9px; }
+  .navin nav { display:flex; gap:20px; font-size:14px; flex-wrap:wrap; align-items:baseline; }
+  .navin nav a { color:var(--muted); text-decoration:none; }
+  .navin nav a:hover { text-decoration:underline; }
+  .dd { position:relative; }
+  .dd > a::after { content:" \\25BE"; font-size:11px; }
+  .dd-menu { display:none; position:absolute; left:-12px; top:100%; padding-top:8px; z-index:20; }
+  .dd:focus-within .dd-menu { display:block; }
+  @media (hover: hover) { .dd:hover .dd-menu { display:block; } }
+  .dd-list { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:6px; min-width:230px; box-shadow:0 8px 30px rgba(0,0,0,.45); }
+  .navin .dd-list a { display:block; padding:7px 10px; border-radius:6px; color:var(--fg); white-space:nowrap; }
+  .navin .dd-list a:hover, .navin .dd-list a:focus { background:var(--inset); text-decoration:none; }
+  .navin .dd-list a.dd-all { color:var(--muted); }`;
+
+/** The nav bar every public page carries (homepage, legal, contact, integrations). */
+export function siteNavHtml(): string {
+  const items = INTEGRATIONS.map((i) => `<a href="/integrations/${i.name}">${escapeHtml(i.framework)}</a>`).join("");
+  return `<div class="navbar"><div class="navin">
+<a class="brand" href="/"><img src="/logo.svg" width="24" height="24" alt="">TollWarden</a>
+<nav aria-label="Site"><a href="/#what-a-scan-catches">detectors</a><div class="dd"><a href="/integrations">integrations</a><div class="dd-menu"><div class="dd-list">${items}<a class="dd-all" href="/integrations">All integrations</a></div></div></div><a href="/#get-started">get started</a><a href="/#pricing">pricing</a><a href="/dashboard">dashboard</a><a href="/contact">contact</a><a href="https://github.com/tollwarden/tollwarden">GitHub</a></nav>
+</div></div>`;
+}
+
 function markdownPageHtml(cfg: TollWardenConfig, title: string, description: string, path: string, markdown: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -580,10 +614,12 @@ ${ICON_LINKS}
 ${seoMeta(cfg, title, description, path)}
 <style>
 ${BASE_CSS}
+${NAV_CSS}
   .wrap { max-width:760px; margin:0 auto; padding:32px 20px 64px; }
 </style>
 </head>
 <body>
+${siteNavHtml()}
 <div class="wrap">
 ${renderMarkdown(markdown)}
 <footer><a href="/">TollWarden</a> · <a href="/contact">Contact</a> · <a href="/terms">Terms of Use</a> · <a href="/privacy">Privacy Policy</a> · <a href="https://github.com/tollwarden/tollwarden">Source</a>${analyticsFor(cfg)?.settings ?? ""}</footer>
@@ -606,13 +642,7 @@ function fmtInt(n: number): string {
 
 const HOME_CSS = `
 ${BASE_CSS}
-  .navbar { border-bottom:1px solid var(--line); }
-  .navin { max-width:840px; margin:0 auto; padding:14px 20px; display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; }
-  .navin .brand { color:var(--fg); font-weight:600; font-size:16px; text-decoration:none; }
-  .navin .brand img { vertical-align:-6px; margin-right:9px; }
-  .navin nav { display:flex; gap:20px; font-size:14px; flex-wrap:wrap; }
-  .navin nav a { color:var(--muted); text-decoration:none; }
-  .navin nav a:hover { text-decoration:underline; }
+${NAV_CSS}
   main { max-width:840px; margin:0 auto; padding:48px 20px 64px; }
   .live { color:var(--muted); font:12px ui-monospace,SFMono-Regular,Menlo,monospace; text-transform:uppercase; letter-spacing:.04em; margin:22px 0 8px; }
   .hero-h { font-size:34px; line-height:1.3; margin:0; font-weight:600; letter-spacing:-.01em; text-wrap:pretty; }
@@ -781,10 +811,7 @@ function homeBodyHtml(cfg: TollWardenConfig, stats?: PublicStats | null): string
     (p) =>
       `<div class="row"><span>${escapeHtml(p.name)}</span><span class="mono">${escapeHtml(p.price)} / 30d</span><span class="mono">${escapeHtml(p.limits.price_per_scan)}</span><span class="muted">${p.name === "Pro" ? "6× velocity, deep analysis always on" : "hard-ceiling limits"}</span></div>`,
   ).join("\n");
-  return `<div class="navbar"><div class="navin">
-<a class="brand" href="/"><img src="/logo.svg" width="24" height="24" alt="">TollWarden</a>
-<nav><a href="#what-a-scan-catches">detectors</a><a href="#get-started">get started</a><a href="#pricing">pricing</a><a href="/dashboard">dashboard</a><a href="/contact">contact</a><a href="https://github.com/tollwarden/tollwarden">GitHub</a></nav>
-</div></div>
+  return `${siteNavHtml()}
 <main>
 ${heroStatsHtml(stats)}
 <div class="ctarow">
