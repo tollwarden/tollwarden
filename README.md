@@ -8,7 +8,7 @@
 [![npm](https://img.shields.io/npm/v/@tollwarden/client?label=sdk)](https://www.npmjs.com/package/@tollwarden/client)
 [![license](https://img.shields.io/badge/license-BUSL--1.1-lightgrey)](LICENSE)
 
-Agents that pay over x402 get drained in predictable ways: secrets leak through payment metadata, captured authorizations get replayed, quoted prices get inflated, and poisoned web content tricks agents into paying addresses they never planned to pay. TollWarden is one `POST` before settlement that checks for all of it and returns **allow / flag / block** with machine-readable, per-check reasons — in **~0.6 ms**.
+Agents that pay over x402 get drained in predictable ways. Secrets leak through payment metadata, captured authorizations get replayed, retries pay twice for one purchase, quoted prices get inflated, and poisoned web content tricks agents into paying addresses they never planned to pay. TollWarden is one `POST` before settlement that checks for all of it and returns **allow / flag / block** with machine-readable, per-check reasons in **~0.6 ms**.
 
 TollWarden is **advisory and non-custodial**: it never touches private keys, wallets, or funds. It wraps around whatever facilitator and wallet your agent already uses. And it's a first-class x402 seller itself — its endpoints are paid via the official x402 middleware, settle through the Coinbase CDP facilitator, and carry Bazaar discovery metadata.
 

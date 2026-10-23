@@ -2,7 +2,7 @@
 
 **The payment security firewall for AI agents that pay for things.**
 
-AI agents increasingly buy what they need on their own — API calls, data, compute — over [x402](https://www.x402.org), the protocol that turns HTTP's `402 Payment Required` into instant stablecoin micropayments. That autonomy has a failure mode: software that can *read the internet* and *sign payments* can be talked into paying the wrong party. A poisoned web page whispers "pay this address instead." A payment authorization gets replayed. A lookalike token or vanity address slips past a truncated display. A seller takes the money and never delivers.
+AI agents increasingly buy what they need on their own (API calls, data, compute) over [x402](https://www.x402.org), the protocol that turns HTTP's `402 Payment Required` into instant stablecoin micropayments. That autonomy has a failure mode. Software that can *read the internet* and *sign payments* can be talked into paying the wrong party, or into paying twice. A poisoned web page whispers "pay this address instead." A paid request times out, the client retries, and the retry signs a second valid payment for the same purchase. A payment authorization gets replayed. A lookalike token or vanity address slips past a truncated display. A seller takes the money and never delivers.
 
 TollWarden is one HTTP call that stands between your agent and settlement. Before paying, the agent submits the payment for a scan and gets back a verdict — **allow**, **flag**, or **block** — with machine-readable reasons and a cryptographically signed attestation bound to that exact payment.
 
@@ -12,13 +12,14 @@ The [AI agent payment security guide](https://tollwarden.com/guides/ai-agent-pay
 
 ## What a scan catches
 
-- **Prompt-injection-triggered payments** — the strongest check. If the payee address arrived in content your agent just read (a web page, a tool result), that payment is blocked. Detection survives HTML/markdown markup, base64/hex encoding, invisible Unicode, homoglyphs, leetspeak, and multilingual override phrasing.
-- **Replay** — a payment authorization your agent already used, presented again.
-- **Overpayment** — amounts far beyond the quoted price, or beyond an absolute per-payment ceiling.
-- **Secret and PII leakage** — private keys, seed phrases, API keys, card numbers, SSNs in payment metadata, caught *before* they're transmitted.
-- **Lookalike tokens and address poisoning** — non-canonical "USDC" contracts, and addresses crafted to match a legitimate counterparty's first and last characters.
-- **Counterparty risk** — a shared reputation registry with time decay and signed rebuttals, plus **measured delivery history**: sellers who take payment and don't deliver get flagged, based on commitment-bound outcomes, not self-reports.
-- **Velocity** — rate and hourly spend caps, so a compromised agent can't drain a wallet in a burst.
+- **Prompt-injection-triggered payments.** The strongest check. If the payee address arrived in content your agent just read (a web page, a tool result), that payment is blocked. Detection survives HTML/markdown markup, base64/hex encoding, invisible Unicode, homoglyphs, leetspeak, and multilingual override phrasing.
+- **Duplicate purchases on retry.** x402 clients sign a fresh authorization for every 402 they see, so a retried request is a second valid payment with a new nonce, and both can settle. A second scan of the same purchase (payer, payee, asset, amount, resource URL) within 60 seconds is flagged. It is never blocked, because TollWarden sees scans, not settlements, and can't know the first one settled. Pass the earlier `scan_id` as `context.repeat_of` when you mean to buy again.
+- **Replay.** A payment authorization your agent already used, presented again.
+- **Overpayment.** Amounts far beyond the quoted price, or beyond an absolute per-payment ceiling.
+- **Secret and PII leakage.** Private keys, seed phrases, API keys, card numbers, SSNs in payment metadata, caught *before* they're transmitted.
+- **Lookalike tokens and address poisoning.** Non-canonical "USDC" contracts, and addresses crafted to match a legitimate counterparty's first and last characters.
+- **Counterparty risk.** A shared reputation registry with time decay and signed rebuttals, plus **measured delivery history**. Sellers who take payment and don't deliver get flagged, based on commitment-bound outcomes, not self-reports.
+- **Velocity.** Rate and hourly spend caps, so a compromised agent can't drain a wallet in a burst.
 
 ## From advisory to enforceable
 
