@@ -78,6 +78,28 @@ A clean payment returns `verdict: "allow"` with an Ed25519-signed attestation. H
 
 Machine-readable reasons, so your agent can act on them — not just a score.
 
+## Retries, and the flag you may see
+
+x402 clients sign a fresh authorization for every 402 they see. When a paid request times out and your code retries it, the retry is a second valid payment with a new nonce, and both can settle. TollWarden flags that second authorization as `replay.duplicate_purchase` when it matches your previous scan of the same purchase (payer, `pay_to`, asset, amount and `resource_url`) within 60 seconds. It flags and never blocks, because TollWarden sees scans, not settlements, and cannot know whether the first attempt settled.
+
+When you see that flag, check whether the earlier payment settled before paying again. If you meant to buy the same thing twice (polling a paid feed, say), tell the scan which attempt you are repeating.
+
+```python
+first = tollwarden.scan_outgoing(payment)
+# later, a deliberate second purchase of the same resource
+again = tollwarden.scan_outgoing(next_payment, context={"origin": "planning", "repeat_of": first["scan_id"]})
+```
+
+`repeat_of` must name your latest scan of that purchase, and it clears that one repeat only, so the next repeat names the newest `scan_id`. Passing `context` replaces the automatic provenance tagging for that scan, so set `origin` yourself.
+
+The other way to clear it is a delivery outcome. Once the earlier attempt is reported as delivered, a second purchase reads as a new decision rather than a retry. The minute 2 wrappers report outcomes automatically, so with them a repeat after a successful paid call does not flag, and a retry after a failed or timed-out call does, which is the case worth stopping for. If you settle some other way, report the outcome yourself, and only when the seller did deliver, since outcomes are final and feed that seller's history.
+
+```ts
+await tollwarden.reportOutcome(firstScan, "delivered");
+```
+
+The TypeScript client does not pass `context.repeat_of` through yet, so from TypeScript report the earlier outcome, or send `repeat_of` inside `context` on a direct `POST /v1/scan/outgoing`.
+
 ## Minute 5 — or skip all of the above if you're on a framework
 
 Already building on an agent framework? One package gives your agent the tools *and* wires the provenance tagging automatically:

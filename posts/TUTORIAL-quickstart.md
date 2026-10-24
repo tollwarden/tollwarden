@@ -66,7 +66,24 @@ Every response carries an Ed25519 attestation cryptographically bound to *that e
 
 Wallet authors: the verifier is exported standalone (`verifyAttestation` / `verify_attestation`). A wallet policy that requires a fresh, payment-bound allow-verdict before signing turns the firewall from advisory into *enforceable* — while TollWarden never touches keys or funds. The whole service is non-custodial by design.
 
-## 5. Claude / MCP agents: zero code
+## 5. Retries can pay twice
+
+A retried x402 request is a second, valid authorization with a fresh nonce, and both can settle. A nonce-replay check admits it, because the nonces differ. TollWarden flags the second one as `replay.duplicate_purchase` when it matches your previous scan of the same purchase within 60 seconds. It flags rather than blocks, because TollWarden sees scans, not settlements, and cannot tell whether the first attempt settled.
+
+When you see that flag, check whether the earlier payment settled before paying again. For a deliberate repeat, report the earlier attempt's outcome first (only if it did deliver, since outcomes are final), and the second purchase reads as a new decision.
+
+```ts
+await tollwarden.reportOutcome(firstScan, "delivered"); // the earlier call completed
+await tollwarden.guardOutgoing(samePurchase, { expectedPriceUsd: 0.01 }); // no duplicate flag
+```
+
+In Python, or over plain HTTP, you can instead name the earlier scan in `context.repeat_of`. It clears that one repeat only.
+
+```python
+tollwarden.guard_outgoing(same_purchase, context={"origin": "planning", "repeat_of": first_scan["scan_id"]})
+```
+
+## 6. Claude and MCP agents, zero code
 
 If your agent speaks MCP, skip the SDK entirely:
 
