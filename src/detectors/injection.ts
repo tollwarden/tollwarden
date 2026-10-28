@@ -267,6 +267,12 @@ const INJECTION_TELLS: Tell[] = [
   // "…without checking back / no need to verify": the companion to
   // payee_change — a payment instruction that pre-empts verification.
   { id: "verify_suppress", weight: 1, kind: "instruction", re: /\b(?:without|no\s+need\s+to|no\s+need\s+for|don'?t|do\s+not|never|skip|not\s+necessary\s+to|there'?s\s+no\s+need\s+to)\s+(?:first\s+|bother\s+(?:to\s+)?)?(?:verif(?:y|ying|ication)|confirm(?:ing|ation)?|double.?check(?:ing)?|check(?:ing)?\s+(?:back|with|first)|validat(?:e|ing|ion)|ask(?:ing)?\s+(?:the\s+)?(?:user|human|owner|operator|anyone))\b/i, label: "verification-suppression phrasing" },
+  // Token-approval drain: "approve an unlimited USDC allowance for spender
+  // 0x…" moves no funds itself and has no send verb, but hands the spender
+  // the whole balance. Weight 1 — wallet docs describe the same prompt — so
+  // it blocks only beside an address or another tell. "Revoke any unlimited
+  // allowance you granted" has no granting verb in front.
+  { id: "unlimited_allowance", weight: 1, kind: "instruction", re: /\b(?:approve|grant|give|sign|authori[sz]e)\s+(?:an?\s+|the\s+)?(?:unlimited|infinite|uncapped|unrestricted|max(?:imum)?)\s+(?:\w+\s+){0,2}(?:allowance|approval|spending\s+(?:limit|cap))\b|\bset\s+(?:the\s+|your\s+)?(?:\w+\s+)?allowance\s+to\s+(?:the\s+)?(?:max(?:imum)?|unlimited|infinite|uint256)\b/i, label: "unlimited token-allowance request" },
   { id: "invisible_chars", weight: 1, kind: "pressure", re: TELL_INVISIBLE, label: "invisible/zero-width/tag characters (hidden text)" },
   // An ASCII letter directly joined to a Cyrillic/Greek/IPA/small-cap letter
   // inside one word. Real text does not mix scripts within a word; a
