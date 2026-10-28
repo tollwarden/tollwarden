@@ -181,16 +181,23 @@ const OVERRIDE_MOD = "(?:\\s+(?:system|user|operator|developer|safety|default|st
 // those appear constantly in benign prose ("ignore the previous message"), so
 // at our blocking weights they are net false positives, not coverage.
 const OVERRIDE_OBJ = "instructions?|prompts?|rules?|guidance|directives?|directions?|commands?";
+// Two stacked determiners ("all your", "any and all", "each of your"), the
+// canonical "ignore all your previous instructions". Only with the objects
+// that have no benign twin: "forget all your previous commands" is shell
+// docs and "directions" are driving directions.
+const OVERRIDE_DET_STACKED =
+  "(?:(?:all|any|each)\\s+(?:of\\s+)?(?:your|these|those|my|our)\\s+|any\\s+and\\s+all\\s+(?:of\\s+)?(?:(?:the|your|these|those|my|our)\\s+)?)";
+const OVERRIDE_OBJ_CORE = "instructions?|prompts?|rules?|guidance|directives?";
 
 const INJECTION_TELLS: Tell[] = [
   // Strong override: verb + (adjective, possibly conjoined) + high-signal
   // object. Adjective REQUIRED here — that anchor is what keeps weight 2 (which
   // can block on its own from an untrusted origin) precise.
-  { id: "override", weight: 2, kind: "instruction", re: new RegExp(`\\b(?:${OVERRIDE_VERBS})\\s+${OVERRIDE_DET}${OVERRIDE_ADJ}${OVERRIDE_MOD}\\s+(?:${OVERRIDE_OBJ})\\b`, "i"), label: "instruction-override phrasing" },
+  { id: "override", weight: 2, kind: "instruction", re: new RegExp(`\\b(?:${OVERRIDE_VERBS})\\s+(?:${OVERRIDE_DET}${OVERRIDE_ADJ}${OVERRIDE_MOD}\\s+(?:${OVERRIDE_OBJ})|${OVERRIDE_DET_STACKED}${OVERRIDE_ADJ}${OVERRIDE_MOD}\\s+(?:${OVERRIDE_OBJ_CORE}))\\b`, "i"), label: "instruction-override phrasing" },
   // Postpositive form: "ignore the instructions ABOVE / you were given". As
   // unambiguous as the adjective-first form. "below" is deliberately absent —
   // "skip the instructions below if you already installed" is real docs prose.
-  { id: "override_post", weight: 2, kind: "instruction", re: new RegExp(`\\b(?:${OVERRIDE_VERBS})\\s+${OVERRIDE_DET}(?:${OVERRIDE_OBJ})\\s+(?:above|before|earlier|so\\s+far|up\\s+to\\s+(?:this|now)|you\\s+(?:were|have\\s+been)\\s+given)\\b`, "i"), label: "instruction-override phrasing (postpositive)" },
+  { id: "override_post", weight: 2, kind: "instruction", re: new RegExp(`\\b(?:${OVERRIDE_VERBS})\\s+(?:${OVERRIDE_DET}(?:${OVERRIDE_OBJ})|${OVERRIDE_DET_STACKED}(?:${OVERRIDE_OBJ_CORE}))\\s+(?:above|before|earlier|so\\s+far|up\\s+to\\s+(?:this|now)|you\\s+(?:were|have\\s+been)\\s+given)\\b`, "i"), label: "instruction-override phrasing (postpositive)" },
   // Loose override: same verbs + object but NO adjective ("ignore instructions",
   // "forget the conversation"). Weight 1 — bare verb+object can appear benignly
   // ("you can ignore instructions in the legacy section"), so it flags on its
