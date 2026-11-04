@@ -163,10 +163,14 @@ interface Tell {
 // "override" and "drop" are deliberately absent: "later rules override the
 // previous rules" and "drop the following commands into a terminal" are docs
 // prose. The precedence tell covers "overrides all previous …".
+// Every contraction in the tells accepts the typographic apostrophe (U+2019)
+// and the modifier-letter apostrophe (U+02BC) as well as the ASCII one. CMS
+// and word-processor text curls the apostrophe in "don't" by default, so an
+// ASCII-only "don'?t" left every negated tell blind to typeset web pages.
 const OVERRIDE_VERBS =
   "ignore|disregard|skip|forget|neglect|overlook|omit|bypass|discard|dismiss|abandon|disobey|" +
   "pay\\s+no\\s+attention\\s+to|(?:cease|stop)\\s+(?:following|obeying)|no\\s+longer\\s+follow|" +
-  "(?:do\\s+not|don'?t)\\s+(?:follow|obey|comply\\s+with|adhere\\s+to|heed)";
+  "(?:do\\s+not|don['\\u2019\\u02BC]?t)\\s+(?:follow|obey|comply\\s+with|adhere\\s+to|heed)";
 // Determiners between verb and adjective ("all of the", "every", "your").
 const OVERRIDE_DET =
   "(?:(?:all|any|each)\\s+(?:of\\s+)?|every\\s+|the\\s+|your\\s+|these\\s+|those\\s+|my\\s+|our\\s+)?(?:the\\s+)?";
@@ -222,10 +226,10 @@ const INJECTION_TELLS: Tell[] = [
   // know". Verbs like show/report and the "without notifying the user"
   // participle form are software-docs prose ("dismisses without notifying the
   // user") and live in the weight-1 tell below.
-  { id: "secrecy", weight: 2, kind: "instruction", re: /\b(?:do\s+not|don'?t|never)\s+(?:tell|inform|notify|alert|disclose|reveal|mention\s+(?:this\s+)?to)\s+(?:this\s+|it\s+|that\s+|anything\s+)?(?:to\s+)?(?:the\s+|your\s+)?(?:user|human|owner|operator|principal|account\s+holder)\b|\bthe\s+(?:user|human|owner|operator)\s+(?:does\s+not|doesn'?t|must\s+not|need\s+not|should\s+not|shouldn'?t)\s+(?:need\s+to\s+)?(?:know|be\s+told|be\s+informed)\b/i, label: "concealment instruction" },
+  { id: "secrecy", weight: 2, kind: "instruction", re: /\b(?:do\s+not|don['\u2019\u02BC]?t|never)\s+(?:tell|inform|notify|alert|disclose|reveal|mention\s+(?:this\s+)?to)\s+(?:this\s+|it\s+|that\s+|anything\s+)?(?:to\s+)?(?:the\s+|your\s+)?(?:user|human|owner|operator|principal|account\s+holder)\b|\bthe\s+(?:user|human|owner|operator)\s+(?:does\s+not|doesn['\u2019\u02BC]?t|must\s+not|need\s+not|should\s+not|shouldn['\u2019\u02BC]?t)\s+(?:need\s+to\s+)?(?:know|be\s+told|be\s+informed)\b/i, label: "concealment instruction" },
   // Softer concealment ("don't tell anyone", "keep this between us", "without
   // informing the user"): common enough in benign prose to sit at weight 1.
-  { id: "secrecy_loose", weight: 1, kind: "instruction", re: /\b(?:do\s+not|don'?t|never)\s+(?:tell|inform|mention\s+(?:this\s+)?to)\s+(?:anyone|anybody)\b|\bkeep\s+this\s+(?:secret|confidential|private|between\s+us|to\s+yourself)\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?(?:user|human|owner|operator)\b/i, label: "concealment instruction (loose)" },
+  { id: "secrecy_loose", weight: 1, kind: "instruction", re: /\b(?:do\s+not|don['\u2019\u02BC]?t|never)\s+(?:tell|inform|mention\s+(?:this\s+)?to)\s+(?:anyone|anybody)\b|\bkeep\s+this\s+(?:secret|confidential|private|between\s+us|to\s+yourself)\b|\bwithout\s+(?:telling|informing|notifying|alerting)\s+(?:the\s+)?(?:user|human|owner|operator)\b/i, label: "concealment instruction (loose)" },
   // Spoofed role/system markers. Case-insensitive: "System:" at line start and
   // "<SYSTEM>" are the same spoof as their lowercase forms. Covers bracketed
   // and tagged system/admin/developer/operator roles, chat-template system
@@ -266,7 +270,7 @@ const INJECTION_TELLS: Tell[] = [
   { id: "payee_change", weight: 1, kind: "instruction", re: /\b(?:new|updated|changed|replacement|corrected|alternate|alternative)\s+(?:\w+\s+)?(?:wallet\s+address|payment\s+address|deposit\s+address|receiving\s+address|payee|bank\s+account|payment\s+details|banking\s+details|remittance\s+details)\b|\b(?:wallet|address|payee|bank\s+account|payment\s+details|banking\s+details)\s+(?:has|have|was|were)\s+(?:recently\s+|just\s+)?(?:been\s+)?(?:changed|updated|switched|moved|migrated|replaced)\b|\b(?:switched|changed|moved)\s+(?:their|our|the|its)\s+(?:\w+\s+)?(?:wallet|address|payee|bank\s+account)\b/i, label: "payee/beneficiary change phrasing" },
   // "…without checking back / no need to verify": the companion to
   // payee_change — a payment instruction that pre-empts verification.
-  { id: "verify_suppress", weight: 1, kind: "instruction", re: /\b(?:without|no\s+need\s+to|no\s+need\s+for|don'?t|do\s+not|never|skip|not\s+necessary\s+to|there'?s\s+no\s+need\s+to)\s+(?:first\s+|bother\s+(?:to\s+)?)?(?:verif(?:y|ying|ication)|confirm(?:ing|ation)?|double.?check(?:ing)?|check(?:ing)?\s+(?:back|with|first)|validat(?:e|ing|ion)|ask(?:ing)?\s+(?:the\s+)?(?:user|human|owner|operator|anyone))\b/i, label: "verification-suppression phrasing" },
+  { id: "verify_suppress", weight: 1, kind: "instruction", re: /\b(?:without|no\s+need\s+to|no\s+need\s+for|don['\u2019\u02BC]?t|do\s+not|never|skip|not\s+necessary\s+to|there['\u2019\u02BC]?s\s+no\s+need\s+to)\s+(?:first\s+|bother\s+(?:to\s+)?)?(?:verif(?:y|ying|ication)|confirm(?:ing|ation)?|double.?check(?:ing)?|check(?:ing)?\s+(?:back|with|first)|validat(?:e|ing|ion)|ask(?:ing)?\s+(?:the\s+)?(?:user|human|owner|operator|anyone))\b/i, label: "verification-suppression phrasing" },
   { id: "invisible_chars", weight: 1, kind: "pressure", re: TELL_INVISIBLE, label: "invisible/zero-width/tag characters (hidden text)" },
   // An ASCII letter directly joined to a Cyrillic/Greek/IPA/small-cap letter
   // inside one word. Real text does not mix scripts within a word; a
