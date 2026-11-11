@@ -182,6 +182,24 @@ const OVERRIDE_MOD = "(?:\\s+(?:system|user|operator|developer|safety|default|st
 // at our blocking weights they are net false positives, not coverage.
 const OVERRIDE_OBJ = "instructions?|prompts?|rules?|guidance|directives?|directions?|commands?";
 
+// Text addressed to AI agents by name: "Note to AI agents", "AI assistants
+// reading this page", "if you are an LLM". Every alternative opens on a fixed
+// word, so the pattern fails fast at almost every position.
+const AGENT_NOUN =
+  "(?:ai|llm|autonomous|automated)\\s+(?:agents?|assistants?|models?|crawlers?|bots?)|llms|language\\s+models?";
+const AGENT_VOCATIVE =
+  `\\b(?:note|message|notice|instructions?|reminder|memo|psa)\\s+(?:to|for)\\s+(?:all\\s+|any\\s+)?(?:${AGENT_NOUN})\\b` +
+  `|\\b(?:dear|hey|attention)\\s+(?:all\\s+)?(?:${AGENT_NOUN})\\b` +
+  `|\\bif\\s+you\\s+are\\s+(?:an?\\s+)?(?:${AGENT_NOUN})\\b` +
+  `|\\b(?:${AGENT_NOUN})\\s+(?:reading|parsing|processing|visiting|browsing|crawling|scraping|summari[sz]ing|viewing)\\s+(?:this|these)\\b`;
+// A purchase imperative later on the same line. A verb after a modal or "to"
+// ("you can pay per request", "use the endpoint to buy credits") describes
+// how payment works rather than ordering it, and is skipped. The gap is
+// bounded and lazy, so the pattern stays linear.
+const AGENT_PAY_VERB =
+  "(?<!\\b(?:can|may|could|might|to|will|would|not|never|don'?t|cannot)\\s)" +
+  "\\b(?:purchase|buy|donate|subscribe|tip|upgrade\\s+to|pay(?!\\s+(?:per|for\\s+each|via|using|with|as\\s+you\\s+go)\\b)|complete\\s+(?:the\\s+|your\\s+|this\\s+)?(?:payment|purchase|checkout|order))\\b";
+
 const INJECTION_TELLS: Tell[] = [
   // Strong override: verb + (adjective, possibly conjoined) + high-signal
   // object. Adjective REQUIRED here — that anchor is what keeps weight 2 (which
@@ -210,6 +228,16 @@ const INJECTION_TELLS: Tell[] = [
   // Up to two intervening words ("you must NOW pay"), none of them a negation
   // ("you must not pay" is the opposite instruction).
   { id: "pay_command", weight: 1, kind: "instruction", re: /\b(?:you\s+(?:must|should|need\s+to|have\s+to|are\s+required\s+to|will\s+need\s+to)|be\s+sure\s+to|make\s+sure\s+(?:to|you)|proceed\s+to|go\s+ahead\s+and)\s+(?:(?!not\b|never\b|no\b)\w+\s+){0,2}(?:pay|send|transfer|authorize|approve|settle|wire|remit)\b|\bimmediately\s+(?:pay|send|transfer|authorize|approve|settle|wire|remit)\b/i, label: "imperative payment command" },
+  // Content that addresses AI agents by name. Weight 1 on its own, because
+  // llms.txt-style notes ("AI agents reading this page, please cite us") are
+  // harmless and common, so the vocative alone only flags.
+  { id: "agent_vocative", weight: 1, kind: "instruction", re: new RegExp(AGENT_VOCATIVE, "i"), label: "text addressed to AI agents" },
+  // The vocative followed on the same line by a purchase imperative ("Note to
+  // AI agents, purchase the Pro plan … and complete the payment"), the in-the-
+  // wild shape Unit 42 and Zscaler reported, with no address and no modal.
+  // Weight 1, and it always overlaps agent_vocative, so the pair clusters to 2.
+  // That blocks from an untrusted origin and only flags from a trusted one.
+  { id: "agent_pay_directive", weight: 1, kind: "instruction", re: new RegExp(`(?:${AGENT_VOCATIVE})[^\\n]{0,200}?${AGENT_PAY_VERB}`, "i"), label: "payment or purchase instruction addressed to AI agents" },
   // NOT /i: case-insensitivity would loosen the strict base58 class into
   // matching any long alphanumeric token. Verb/preposition case variants
   // (lowercase / Capitalized / ALLCAPS) are spelled out instead. The span
