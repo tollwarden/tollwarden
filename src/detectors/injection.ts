@@ -233,7 +233,13 @@ const INJECTION_TELLS: Tell[] = [
   // system/admin/developer PROMPT (a bare "## Developer" heading is a docs
   // page). The line-start colon form is "system" only — "Admin:" opens forum
   // posts — and a "System:" followed by an OS name is a spec sheet.
-  { id: "role_marker", weight: 2, kind: "instruction", re: /<\/?(?:system|assistant|instructions?|admin|administrator|developer|operator|sys)\s*>|\[\/?(?:system|admin|administrator|developer|operator|sys)\]|^[ \t>]*system\s*:(?!\s*(?:windows|mac|linux|ubuntu|android|ios|requirements?)\b)|<\|(?:system|start_header_id\|>\s*system\s*<\|end_header_id)\|>|^#{1,6}\s*(?:system|admin|developer)\s+(?:prompt|message|instructions?)\s*$/im, label: "spoofed role/system marker" },
+  // Session-style frames ("[BEGIN ADMIN SESSION]", "[begin_admin_session]",
+  // "[SYSTEM OVERRIDE]", "=== SYSTEM OVERRIDE ===") need a privileged role
+  // word plus a begin/end word or an override/mode word, so a log line like
+  // "[BEGIN SESSION 4821]" stays out, and a markdown link ("[Developer
+  // mode](/docs)") is excluded. Bracket padding is bounded and the "=" run
+  // may only start where no "=" precedes it, so every form stays linear.
+  { id: "role_marker", weight: 2, kind: "instruction", re: /<\/?(?:system|assistant|instructions?|admin|administrator|developer|operator|sys)\s*>|\[\/?(?:system|admin|administrator|developer|operator|sys)\]|^[ \t>]*system\s*:(?!\s*(?:windows|mac|linux|ubuntu|android|ios|requirements?)\b)|<\|(?:system|start_header_id\|>\s*system\s*<\|end_header_id)\|>|^#{1,6}\s*(?:system|admin|developer)\s+(?:prompt|message|instructions?)\s*$|\[[ \t]{0,3}(?:begin|start|end|enter|exit)[ _-]{1,3}(?:system|admin|administrator|developer|operator|root|sudo)(?:[ _-]{1,3}(?:session|mode|override|access|prompt|instructions?|message|privileges?))?[ \t]{0,3}\](?!\()|\[[ \t]{0,3}(?:system|admin|administrator|developer|operator|root|sudo)[ _-]{1,3}(?:override|mode)[ \t]{0,3}\](?!\()|(?<!=)={3,}[ \t]*(?:system|admin|administrator|developer|operator)[ \t]+(?:override|prompt|message|instructions?|mode|session|access)[ \t]*={3,}/im, label: "spoofed role/system marker" },
   // Chat-template / tool-structure spoofing, incl. Guidance-language markers
   // ({{#system~}}, {{/user~}}) — templating tokens with no place in prose, and
   // a JSON/YAML role field naming a privileged role (quoted JSON shape or a
