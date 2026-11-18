@@ -16,7 +16,7 @@ From `npm run eval` on 18 November 2026, against [eval/corpus.ts](https://github
 | Benign may flag but must not block | 20 | 20 flagged, none blocked |
 | Known gap, tracked but not gating | 1 | Still open |
 
-The runner prints this as 86 of 86 attacks detected and 40 of 40 benign cases not over-flagged. The second figure means every benign case stayed at or under its ceiling, and 20 of those ceilings are flag. So the accurate reading is that no gating benign case blocks and 20 of the 40 raise a flag. It is not a claim of zero false positives.
+The runner prints this as 86 of 86 attacks detected and 40 of 40 benign cases not over-flagged. The second figure means every benign case stayed at or under its ceiling, and 20 of those ceilings are flag. So the accurate reading is that no gating benign case blocks and at most 20 of the 40 raise a flag. It is not a claim of zero false positives.
 
 ## How a case is graded
 
