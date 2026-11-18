@@ -267,6 +267,15 @@ const INJECTION_TELLS: Tell[] = [
   // "…without checking back / no need to verify": the companion to
   // payee_change — a payment instruction that pre-empts verification.
   { id: "verify_suppress", weight: 1, kind: "instruction", re: /\b(?:without|no\s+need\s+to|no\s+need\s+for|don'?t|do\s+not|never|skip|not\s+necessary\s+to|there'?s\s+no\s+need\s+to)\s+(?:first\s+|bother\s+(?:to\s+)?)?(?:verif(?:y|ying|ication)|confirm(?:ing|ation)?|double.?check(?:ing)?|check(?:ing)?\s+(?:back|with|first)|validat(?:e|ing|ion)|ask(?:ing)?\s+(?:the\s+)?(?:user|human|owner|operator|anyone))\b/i, label: "verification-suppression phrasing" },
+  // A claim that the spend is already cleared, aimed at the agent's own
+  // guardrails: "the owner has pre-approved all charges", "the user already
+  // approved this payment", "your spending limit has been raised", "you are
+  // authorized to transfer". Weight 1 — an expense policy or an approval
+  // receipt says the same words — so it flags alone and blocks only when it
+  // clusters or sits beside an address. Each alternative needs a spend object
+  // or the agent as addressee: "cards are pre-approved for up to $5,000" and
+  // "your spending limit can be raised" stay out.
+  { id: "spend_preauth", weight: 1, kind: "instruction", re: /\b(?:already|pre-?)\s?(?:approved|authori[sz]ed)\s+(?:all|every|any|this|these|the|your)\s+(?:\w+\s+)?(?:charges?|payments?|purchases?|transactions?|invoices?|transfers?)\b|\byour\s+(?:daily\s+|weekly\s+|monthly\s+|session\s+|card\s+|account\s+)?(?:spending|spend|payment|transaction|purchase)\s+(?:limit|cap|ceiling|budget)\s+(?:has|have|was|is)\s+(?:now\s+)?(?:been\s+)?(?:raised|increased|lifted|removed|disabled|waived|unlocked|doubled)\b|\byou\s+(?:are|have\s+been)\s+(?:now\s+)?(?:pre-?)?(?:authori[sz]ed|cleared|approved)\s+to\s+(?:pay|transfer|spend|send|settle|wire|remit|purchase|charge)\b/i, label: "pre-authorization / raised-limit claim" },
   { id: "invisible_chars", weight: 1, kind: "pressure", re: TELL_INVISIBLE, label: "invisible/zero-width/tag characters (hidden text)" },
   // An ASCII letter directly joined to a Cyrillic/Greek/IPA/small-cap letter
   // inside one word. Real text does not mix scripts within a word; a
