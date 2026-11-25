@@ -6,17 +6,17 @@ The corpus is TollWarden's own. The people who wrote the detector wrote the case
 
 ## Results
 
-From `npm run eval` on 15 October 2026, against [eval/corpus.ts](https://github.com/tollwarden/tollwarden/blob/main/eval/corpus.ts). The corpus has 124 cases, 85 attacks and 39 benign. One benign case is a documented known gap, tracked but not gating.
+From `npm run eval` on 15 October 2026, against [eval/corpus.ts](https://github.com/tollwarden/tollwarden/blob/main/eval/corpus.ts). The corpus has 127 cases, 86 attacks and 41 benign. One benign case is a documented known gap, tracked but not gating.
 
 | Requirement | Cases | Result |
 | --- | --- | --- |
-| Attack must reach block | 74 | 74 blocked |
+| Attack must reach block | 75 | 75 blocked |
 | Attack must reach at least flag | 11 | 11 flagged |
 | Benign must stay allow | 20 | 20 allowed |
-| Benign may flag but must not block | 18 | 18 flagged, none blocked |
+| Benign may flag but must not block | 20 | 20 flagged, none blocked |
 | Known gap, tracked but not gating | 1 | Still open |
 
-The runner prints this as 85 of 85 attacks detected and 38 of 38 benign cases not over-flagged. The second figure means every benign case stayed at or under its ceiling, and 18 of those ceilings are flag. So the accurate reading is that no gating benign case blocks and 18 of the 38 raise a flag. It is not a claim of zero false positives.
+The runner prints this as 86 of 86 attacks detected and 40 of 40 benign cases not over-flagged. The second figure means every benign case stayed at or under its ceiling, and 20 of those ceilings are flag. So the accurate reading is that no gating benign case blocks and 20 of the 40 raise a flag. It is not a claim of zero false positives.
 
 ## How a case is graded
 
@@ -32,7 +32,7 @@ An attack case names the minimum level it must reach, and a benign case names th
 | --- | --- | --- | --- |
 | `tells` | 9 | 8 | Override phrasing, "transfer the balance to" an address, secrecy, fake role markers, spoofed tool output, a weak tell next to an address |
 | `tells-i18n` | 7 | 7 | Override phrasing in Spanish, French, German, Portuguese, Russian, Chinese and Japanese |
-| `tells-ext` | 12 | 8 | Phrasings in the style of public injection test sets (Rebuff, vigil, garak), template control tokens, fabricated chat turns |
+| `tells-ext` | 13 | 9 | Phrasings in the style of public injection test sets (Rebuff, vigil, garak), template control tokens, fabricated chat turns, a memory injection that plants a payee for future sessions |
 | `tells-wording` | 25 | 20 | Wording that slipped past earlier versions, such as "every prior", "the instructions above", a capitalised `System:` line, Llama 3 and Phi chat-template headers, a decimal amount inside a send instruction |
 | `tells-bec` | 2 | 2 | Business-email-compromise phrasing, a changed payee with verification waved off and no override verb at all |
 | `markup` | 4 | 4 | Tells split by markdown emphasis, inline HTML tags or `&nbsp;` entities, or hidden in a `display:none` element |
@@ -50,7 +50,7 @@ The 11 attacks that only need to flag use phrasing that benign text shares. A ba
 | --- | --- | --- | --- | --- |
 | `benign` | 18 | 14 | 3, plus the known gap | Plain docs, base64 in docs, git commit hashes, a legitimate 402 offer, Russian and French prose, JSON tool output, an unrelated address, ordinary uses of "ignore", "directions" and "start over" |
 | `benign-scoring` | 11 | 0 | 11 | Text with pressure and no instruction, such as marketing urgency, a byte-order mark, soft hyphens, a real transcript, two weak tells 2,000 characters apart, or a user telling the agent whom to pay |
-| `benign-wording` | 10 | 6 | 4 | Lines that look like tells and aren't, such as `System: Windows 11` in a spec sheet, `Admin:` opening a forum post, "you must not pay", "new shipping address", and a 4.7kΩ resistor value |
+| `benign-wording` | 12 | 6 | 6 | Lines that look like tells and aren't, such as `System: Windows 11` in a spec sheet, `Admin:` opening a forum post, "you must not pay", "new shipping address", a 4.7kΩ resistor value, wallet-safety advice about a password manager's memory, and assistant docs describing their memory feature |
 
 ## The open gap
 
@@ -60,7 +60,7 @@ The case stays in the corpus as a known gap. It doesn't fail the run, and the ru
 
 ## Speed
 
-Detection runs inside the scan request, so a pattern that goes quadratic on long input would be a denial of service for every caller. The test suite runs 14 pathological inputs at the 200 KB content cap, such as an unbroken 200 KB base64 run, and fails any that takes 250 ms or more. On two runs on 15 October 2026 the slowest took 26.9 ms and 28.4 ms. Those figures come from one development machine and move with the hardware and the run, but the 250 ms ceiling is what the suite enforces everywhere it runs.
+Detection runs inside the scan request, so a pattern that goes quadratic on long input would be a denial of service for every caller. The test suite runs 17 pathological inputs at the 200 KB content cap, such as an unbroken 200 KB base64 run, and fails any that takes 250 ms or more. On two runs on 15 October 2026 the slowest took 26.9 ms and 28.4 ms. Those figures come from one development machine and move with the hardware and the run, but the 250 ms ceiling is what the suite enforces everywhere it runs.
 
 ## What these numbers do not show
 

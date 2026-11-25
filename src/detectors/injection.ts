@@ -267,6 +267,14 @@ const INJECTION_TELLS: Tell[] = [
   // "…without checking back / no need to verify": the companion to
   // payee_change — a payment instruction that pre-empts verification.
   { id: "verify_suppress", weight: 1, kind: "instruction", re: /\b(?:without|no\s+need\s+to|no\s+need\s+for|don'?t|do\s+not|never|skip|not\s+necessary\s+to|there'?s\s+no\s+need\s+to)\s+(?:first\s+|bother\s+(?:to\s+)?)?(?:verif(?:y|ying|ication)|confirm(?:ing|ation)?|double.?check(?:ing)?|check(?:ing)?\s+(?:back|with|first)|validat(?:e|ing|ion)|ask(?:ing)?\s+(?:the\s+)?(?:user|human|owner|operator|anyone))\b/i, label: "verification-suppression phrasing" },
+  // Memory injection (arXiv 2503.16248, the ElizaOS attack): content asks
+  // the agent to write something into its own memory or to apply it in every
+  // future session, so a planted payee outlives the page. Weight 1 because
+  // assistant docs describe their memory feature in these words ("save this
+  // to your memory … in all future conversations"). Beside an address the
+  // proximity boost makes it block. "your … memory" must be adjacent, so
+  // "store it in your password manager's memory" stays out.
+  { id: "memory_persist", weight: 1, kind: "instruction", re: /\b(?:save|store|write|add|commit|record|keep|remember|put|persist)\s+(?:(?:this|it|that|the\s+following|these\s+(?:details|instructions|facts))\s+)?(?:to|in|into)\s+your\s+(?:(?:long[\s-]?term|persistent|permanent|core)\s+)?memory\b|\b(?:in|for|across|during|throughout)\s+(?:every|all|each|any)\s+(?:future|subsequent|later|upcoming)\s+(?:sessions?|conversations?|chats?|tasks?|interactions?|runs?)\b/i, label: "memory-persistence instruction" },
   { id: "invisible_chars", weight: 1, kind: "pressure", re: TELL_INVISIBLE, label: "invisible/zero-width/tag characters (hidden text)" },
   // An ASCII letter directly joined to a Cyrillic/Greek/IPA/small-cap letter
   // inside one word. Real text does not mix scripts within a word; a
